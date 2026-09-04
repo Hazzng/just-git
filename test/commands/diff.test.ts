@@ -432,6 +432,21 @@ describe("git diff", () => {
 	});
 
 	describe("commit-to-worktree shows new files", () => {
+		test("clean committed symlink does not appear", async () => {
+			const bash = createTestBash({
+				files: { "/repo/target.txt": "target\n" },
+				env: TEST_ENV,
+			});
+			await bash.exec("git init");
+			await bash.fs.symlink("target.txt", "/repo/link.txt");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+
+			const result = await bash.exec("git diff HEAD --numstat");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe("");
+		});
+
 		test("new staged file appears as A", async () => {
 			const bash = createTestBash({ files: { "/repo/a.txt": "a\n" }, env: TEST_ENV });
 			await bash.exec("git init");
@@ -461,6 +476,82 @@ describe("git diff", () => {
 			const result = await bash.exec("git diff HEAD --name-status");
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toBe("M\ta.txt\nD\tb.txt\nA\tc.txt\n");
+		});
+
+		test("staged deletion stays deleted when an untracked replacement exists", async () => {
+			const bash = createTestBash({ files: { "/repo/a.txt": "base\n" }, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			await bash.exec("git rm a.txt");
+			await bash.fs.writeFile("/repo/a.txt", "untracked replacement\n");
+
+			const result = await bash.exec("git diff HEAD --name-status");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe("D\ta.txt\n");
+		});
+
+		test("staged and unstaged edits compose to the worktree result", async () => {
+			const bash = createTestBash({ files: { "/repo/a.txt": "base\n" }, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			await bash.fs.writeFile("/repo/a.txt", "staged\n");
+			await bash.exec("git add a.txt");
+			await bash.fs.writeFile("/repo/a.txt", "worktree\n");
+
+			const result = await bash.exec("git diff HEAD --numstat");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe("1\t1\ta.txt\n");
+		});
+
+		test("conflict result is compared directly with the selected commit", async () => {
+			const bash = createTestBash({ files: { "/repo/a.txt": "base\n" }, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "base"');
+			await bash.exec("git checkout -b side");
+			await bash.fs.writeFile("/repo/a.txt", "side\n");
+			await bash.exec("git add a.txt");
+			await bash.exec('git commit -m "side"');
+			await bash.exec("git checkout main");
+			await bash.fs.writeFile("/repo/a.txt", "main\n");
+			await bash.exec("git add a.txt");
+			await bash.exec('git commit -m "main"');
+			const merge = await bash.exec("git merge side");
+			expect(merge.exitCode).toBe(1);
+
+			const result = await bash.exec("git diff HEAD --name-status");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe("M\ta.txt\n");
+		});
+
+		test("staged edit canceled in the worktree produces no diff", async () => {
+			const bash = createTestBash({ files: { "/repo/a.txt": "base\n" }, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			await bash.fs.writeFile("/repo/a.txt", "staged\n");
+			await bash.exec("git add a.txt");
+			await bash.fs.writeFile("/repo/a.txt", "base\n");
+
+			const result = await bash.exec("git diff HEAD --numstat");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe("");
+		});
+
+		test("staged addition removed from the worktree produces no diff", async () => {
+			const bash = createTestBash({ files: { "/repo/a.txt": "base\n" }, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			await bash.fs.writeFile("/repo/new.txt", "new\n");
+			await bash.exec("git add new.txt");
+			await bash.fs.rm("/repo/new.txt");
+
+			const result = await bash.exec("git diff HEAD --name-status");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe("");
 		});
 
 		test("new file shows 'new file mode' header in unified diff", async () => {

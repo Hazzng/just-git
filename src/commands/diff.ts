@@ -25,8 +25,8 @@ import {
 import { join } from "../lib/path.ts";
 import { matchPathspecs, type Pathspec, parsePathspec } from "../lib/pathspec.ts";
 import { parseRangeSyntax } from "../lib/range-syntax.ts";
-import { cleanedWorktreeHash, worktreeBytesForHash } from "../lib/eol.ts";
-import { readWorktreeContent } from "../lib/symlink.ts";
+import { hashCleanedWorktreeEntry, worktreeBytesForHash } from "../lib/eol.ts";
+import { isSubmoduleMode, lstatSafe, readWorktreeContent } from "../lib/symlink.ts";
 import { resolveHead } from "../lib/refs.ts";
 import {
 	detectRenames,
@@ -318,9 +318,12 @@ async function hashWorkTreeFile(
 	referenceHash?: string,
 ): Promise<{ exists: boolean; hash?: string }> {
 	const fullPath = join(workTree, relPath);
-	if (!(await gitCtx.fs.exists(fullPath))) return { exists: false };
-	const bytes = await readWorktreeContent(gitCtx.fs, fullPath);
-	return { exists: true, hash: await cleanedWorktreeHash(gitCtx, bytes, referenceHash) };
+	const stat = await lstatSafe(gitCtx.fs, fullPath).catch(() => null);
+	if (!stat || (!stat.isFile && !stat.isSymbolicLink)) return { exists: false };
+	return {
+		exists: true,
+		hash: await hashCleanedWorktreeEntry(gitCtx, fullPath, referenceHash, stat),
+	};
 }
 
 function appendWorkTreeDelta(
@@ -518,14 +521,44 @@ async function collectCommitToWorkTree(
 	const commitMap = await flattenTreeToMap(gitCtx, result.commit.tree);
 	const index = await readIndex(gitCtx);
 	const indexMap = new Map(getStage0Entries(index).map((e) => [e.path, e]));
+	const unmergedPaths = new Set(index.entries.filter((e) => e.stage > 0).map((e) => e.path));
+	const matchesPath = (path: string) => !pathFilter || matchPathspecs(pathFilter, path);
+	const workTreeDiffs = await diffIndexToWorkTree(gitCtx, index, {
+		includeUntracked: false,
+		pathFilter: matchesPath,
+	});
+	const workTreeDiffMap = new Map(workTreeDiffs.map((diff) => [diff.path, diff]));
 
 	const items: DiffFileResult[] = [];
 
 	for (const [path, entry] of commitMap) {
-		if (pathFilter && !matchPathspecs(pathFilter, path)) continue;
-		const fullPath = join(workTree, path);
+		if (!matchesPath(path)) continue;
 
-		if (!(await gitCtx.fs.exists(fullPath))) {
+		// An unmerged index has no stage-0 entry. `git diff <commit>` still
+		// compares the selected commit directly with the conflict result in
+		// the worktree, rather than emitting an unmerged entry.
+		if (unmergedPaths.has(path)) {
+			const workTreeEntry = await hashWorkTreeFile(gitCtx, workTree, path, entry.hash);
+			if (!workTreeEntry.exists) {
+				items.push({ path, status: "D", oldHash: entry.hash, oldMode: entry.mode });
+			} else if (workTreeEntry.hash !== entry.hash) {
+				items.push({
+					path,
+					status: "M",
+					oldHash: entry.hash,
+					newHash: workTreeEntry.hash,
+					oldMode: entry.mode,
+					newMode: entry.mode,
+					newFromWorkTree: true,
+				});
+			}
+			continue;
+		}
+
+		const indexEntry = indexMap.get(path);
+		if (!indexEntry) {
+			// A staged deletion remains deleted even if an untracked file now
+			// occupies the path.
 			items.push({
 				path,
 				status: "D",
@@ -535,36 +568,62 @@ async function collectCommitToWorkTree(
 			continue;
 		}
 
-		const content = await gitCtx.fs.readFileBuffer(fullPath);
-		const workTreeHash = await cleanedWorktreeHash(gitCtx, content, entry.hash);
+		let workTreeDiff = workTreeDiffMap.get(path);
+		if (isSubmoduleMode(indexEntry.mode)) {
+			const present = await lstatSafe(gitCtx.fs, join(workTree, path))
+				.then(() => true)
+				.catch(() => false);
+			if (!present) {
+				workTreeDiff = { path, status: "deleted", indexHash: indexEntry.hash };
+			}
+		}
 
-		if (workTreeHash !== entry.hash) {
+		if (workTreeDiff?.status === "deleted") {
+			items.push({ path, status: "D", oldHash: entry.hash, oldMode: entry.mode });
+			continue;
+		}
+
+		const effectiveHash =
+			workTreeDiff?.status === "modified" ? workTreeDiff.worktreeHash : indexEntry.hash;
+		const effectiveMode = fmtMode(indexEntry.mode);
+		if (effectiveHash !== entry.hash || effectiveMode !== entry.mode) {
 			items.push({
 				path,
 				status: "M",
 				oldHash: entry.hash,
-				newHash: workTreeHash,
+				newHash: effectiveHash,
 				oldMode: entry.mode,
-				newMode: entry.mode,
-				newFromWorkTree: true,
+				newMode: effectiveMode,
+				newFromWorkTree: workTreeDiff?.status === "modified",
 			});
 		}
 	}
 
 	for (const [path, entry] of indexMap) {
 		if (commitMap.has(path)) continue;
-		if (pathFilter && !matchPathspecs(pathFilter, path)) continue;
-		const fullPath = join(workTree, path);
-		if (!(await gitCtx.fs.exists(fullPath))) continue;
-
-		const content = await gitCtx.fs.readFileBuffer(fullPath);
-		const newHash = await cleanedWorktreeHash(gitCtx, content, entry.hash);
+		if (!matchesPath(path)) continue;
+		const workTreeDiff = workTreeDiffMap.get(path);
+		if (workTreeDiff?.status === "deleted") continue;
 
 		items.push({
 			path,
 			status: "A",
-			newHash,
+			newHash: workTreeDiff?.status === "modified" ? workTreeDiff.worktreeHash : entry.hash,
 			newMode: fmtMode(entry.mode),
+			newFromWorkTree: workTreeDiff?.status === "modified",
+		});
+	}
+
+	for (const path of unmergedPaths) {
+		if (commitMap.has(path) || !matchesPath(path)) continue;
+		const stageEntry = index.entries.find((entry) => entry.path === path && entry.stage > 0);
+		const workTreeEntry = await hashWorkTreeFile(gitCtx, workTree, path, stageEntry?.hash);
+		if (!workTreeEntry.exists) continue;
+		items.push({
+			path,
+			status: "A",
+			newHash: workTreeEntry.hash,
+			newMode: stageEntry ? fmtMode(stageEntry.mode) : undefined,
 			newFromWorkTree: true,
 		});
 	}

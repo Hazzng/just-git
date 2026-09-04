@@ -28,7 +28,13 @@ import { parseRangeSyntax } from "../lib/range-syntax.ts";
 import { cleanedWorktreeHash, worktreeBytesForHash } from "../lib/eol.ts";
 import { readWorktreeContent } from "../lib/symlink.ts";
 import { resolveHead } from "../lib/refs.ts";
-import { detectRenames, formatRenamePath, type RenamePair } from "../lib/rename-detection.ts";
+import {
+	detectRenames,
+	formatRenameLimitWarning,
+	formatRenamePath,
+	type RenamePair,
+	resolveRenameLimit,
+} from "../lib/rename-detection.ts";
 import { diffTrees, flattenTreeToMap } from "../lib/tree-ops.ts";
 import type { GitContext, IndexEntry, ObjectId, TreeDiffEntry } from "../lib/types.ts";
 import { diffIndexToWorkTree } from "../lib/worktree.ts";
@@ -411,7 +417,10 @@ async function collectCached(
 		}
 	}
 
-	const { remaining, renames } = await detectRenames(gitCtx, diffs);
+	const renameLimit = await resolveRenameLimit(gitCtx, "diff");
+	const { remaining, renames, neededRenameLimit } = await detectRenames(gitCtx, diffs, {
+		limit: renameLimit,
+	});
 	const items = renameResultToItems(remaining, renames);
 
 	for (const p of unmergedPaths) {
@@ -423,10 +432,11 @@ async function collectCached(
 	if (pathFilter) {
 		return {
 			items: items.filter((item) => matchPathspecs(pathFilter, item.path)),
+			stderr: formatRenameLimitWarning("diff", neededRenameLimit),
 		};
 	}
 
-	return { items };
+	return { items, stderr: formatRenameLimitWarning("diff", neededRenameLimit) };
 }
 
 async function collectCommitToCommit(
@@ -473,7 +483,7 @@ async function collectThreeDot(
 	const diffs = await diffTrees(gitCtx, baseCommit.tree, rightResult.commit.tree);
 	const result = await applyRenameDetectionAndFilter(gitCtx, diffs, pathFilter);
 	if (isError(result)) return result;
-	if (stderr) result.stderr = stderr;
+	if (stderr) result.stderr = stderr + (result.stderr ?? "");
 	return result;
 }
 
@@ -482,17 +492,21 @@ async function applyRenameDetectionAndFilter(
 	diffs: TreeDiffEntry[],
 	pathFilter: Pathspec[] | null,
 ): Promise<DiffCollectResult> {
-	const { remaining, renames } = await detectRenames(gitCtx, diffs);
+	const renameLimit = await resolveRenameLimit(gitCtx, "diff");
+	const { remaining, renames, neededRenameLimit } = await detectRenames(gitCtx, diffs, {
+		limit: renameLimit,
+	});
 	const items = renameResultToItems(remaining, renames);
 	items.sort((a, b) => comparePaths(a.path, b.path));
 
 	if (pathFilter) {
 		return {
 			items: items.filter((item) => matchPathspecs(pathFilter, item.path)),
+			stderr: formatRenameLimitWarning("diff", neededRenameLimit),
 		};
 	}
 
-	return { items };
+	return { items, stderr: formatRenameLimitWarning("diff", neededRenameLimit) };
 }
 
 async function collectCommitToWorkTree(

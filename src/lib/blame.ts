@@ -1,7 +1,7 @@
 import { splitLines } from "./diff-algorithm.ts";
 import { myersDiff } from "./diff-algorithm.ts";
 import { readBlobContent, readCommit } from "./object-db.ts";
-import { detectRenames } from "./rename-detection.ts";
+import { detectRenames, resolveRenameLimit } from "./rename-detection.ts";
 import { diffTrees, flattenTreeToMap } from "./tree-ops.ts";
 import type { Commit, GitRepo, Identity, ObjectId } from "./types.ts";
 
@@ -53,7 +53,8 @@ async function findRenamedPath(
 	const addedEntry = diffs.find((d) => d.status === "added" && d.path === path);
 	if (!addedEntry) return null;
 
-	const { renames } = await detectRenames(ctx, diffs);
+	const renameLimit = await resolveRenameLimit(ctx, "diff");
+	const { renames } = await detectRenames(ctx, diffs, { limit: renameLimit });
 	const rename = renames.find((r) => r.newPath === path);
 	return rename?.oldPath ?? null;
 }

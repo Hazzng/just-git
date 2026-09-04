@@ -25,7 +25,13 @@ import type { Pathspec } from "../lib/pathspec.ts";
 import { matchPathspecs, parsePathspec } from "../lib/pathspec.ts";
 import { parseRangeSyntax } from "../lib/range-syntax.ts";
 import { branchNameFromRef, listRefs, readHead, resolveHead } from "../lib/refs.ts";
-import { detectRenames, formatRenamePath, type RenamePair } from "../lib/rename-detection.ts";
+import {
+	detectRenames,
+	formatRenameLimitWarning,
+	formatRenamePath,
+	type RenamePair,
+	resolveRenameLimit,
+} from "../lib/rename-detection.ts";
 import { resolveRevision } from "../lib/rev-parse.ts";
 import { diffTrees } from "../lib/tree-ops.ts";
 import type { Commit, GitRepo, ObjectId, TreeDiffEntry } from "../lib/types.ts";
@@ -298,6 +304,9 @@ export function registerLogCommand(parent: Command, ext?: GitExtensions) {
 			}
 
 			const entries = reverseOutput ? collected.reverse() : collected;
+			const renameState: RenameWarningState = {
+				limit: await resolveRenameLimit(gitCtx, "diff"),
+			};
 
 			// ── Format output ───────────────────────────────────
 			if (useGraph) {
@@ -310,6 +319,7 @@ export function registerLogCommand(parent: Command, ext?: GitExtensions) {
 					diffFormat,
 					decoFn,
 					decoRawFn,
+					renameState,
 					dateMode,
 				);
 			}
@@ -330,7 +340,7 @@ export function registerLogCommand(parent: Command, ext?: GitExtensions) {
 						]),
 					};
 					let line = expandFormat(customFormat, fctx);
-					const diffText = await formatCommitDiff(gitCtx, entry.commit, diffFormat);
+					const diffText = await formatCommitDiff(gitCtx, entry.commit, diffFormat, renameState);
 					if (diffText) {
 						line += `\n\n${diffText.replace(/\n$/, "")}`;
 					}
@@ -338,7 +348,7 @@ export function registerLogCommand(parent: Command, ext?: GitExtensions) {
 				}
 				return {
 					stdout: lines.length > 0 ? `${lines.join("\n")}\n` : "",
-					stderr: "",
+					stderr: formatRenameLimitWarning("diff", renameState.needed),
 					exitCode: 0,
 				};
 			}
@@ -361,7 +371,7 @@ export function registerLogCommand(parent: Command, ext?: GitExtensions) {
 					]),
 				};
 				let line = formatPreset(effectivePreset, fctx, idx === 0, abbrevCommit);
-				const diffText = await formatCommitDiff(gitCtx, entry.commit, diffFormat);
+				const diffText = await formatCommitDiff(gitCtx, entry.commit, diffFormat, renameState);
 				if (diffText) {
 					const sep = isOneline ? "\n" : "\n\n";
 					line += `${sep}${diffText.replace(/\n$/, "")}`;
@@ -370,7 +380,7 @@ export function registerLogCommand(parent: Command, ext?: GitExtensions) {
 			}
 			return {
 				stdout: lines.length > 0 ? `${lines.join("\n")}\n` : "",
-				stderr: "",
+				stderr: formatRenameLimitWarning("diff", renameState.needed),
 				exitCode: 0,
 			};
 		},
@@ -500,6 +510,11 @@ interface Decoration {
 	fullRef: string;
 }
 
+interface RenameWarningState {
+	limit: number;
+	needed?: number;
+}
+
 interface DecorationMap {
 	headTarget: string | null;
 	headHash: ObjectId | null;
@@ -584,6 +599,7 @@ async function formatWithGraph(
 	diffFormat: LogDiffFormat,
 	decoFn: ((h: ObjectId) => string) | undefined,
 	decoRawFn: ((h: ObjectId) => string) | undefined,
+	renameState: RenameWarningState,
 	dateMode?: DateMode,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const graph = new CommitGraph();
@@ -650,7 +666,13 @@ async function formatWithGraph(
 		// Compute diff/stat after graph columns have settled so we can
 		// reduce the stat width by the graph prefix width (like real git).
 		const statWidth = 80 - graph.width;
-		const diffText = await formatCommitDiff(gitCtx, entry.commit, diffFormat, statWidth);
+		const diffText = await formatCommitDiff(
+			gitCtx,
+			entry.commit,
+			diffFormat,
+			renameState,
+			statWidth,
+		);
 
 		// Diff/stat output gets padding prefixes (columns already settled)
 		if (diffText) {
@@ -671,7 +693,7 @@ async function formatWithGraph(
 
 	return {
 		stdout: output.length > 0 ? `${output.join("\n")}\n` : "",
-		stderr: "",
+		stderr: formatRenameLimitWarning("diff", renameState.needed),
 		exitCode: 0,
 	};
 }
@@ -682,6 +704,7 @@ async function formatCommitDiff(
 	ctx: GitRepo,
 	commit: Commit,
 	format: LogDiffFormat,
+	renameState: RenameWarningState,
 	statWidth?: number,
 ): Promise<string> {
 	if (!format) return "";
@@ -693,7 +716,10 @@ async function formatCommitDiff(
 			: null;
 
 	const rawDiffs = await diffTrees(ctx, parentTree, commit.tree);
-	const { remaining, renames } = await detectRenames(ctx, rawDiffs);
+	const { remaining, renames, neededRenameLimit } = await detectRenames(ctx, rawDiffs, {
+		limit: renameState.limit,
+	});
+	renameState.needed = Math.max(renameState.needed ?? 0, neededRenameLimit ?? 0) || undefined;
 
 	switch (format) {
 		case "name-only":

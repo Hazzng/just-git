@@ -929,6 +929,61 @@ describe("git diff", () => {
 		});
 	});
 
+	describe("rename detection limit", () => {
+		async function setupRenameCandidates() {
+			const bash = createTestBash({ env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.writeFile("/repo/exact-old.txt", "exact\n");
+			await bash.writeFile("/repo/old-a.txt", "common line\nold a\n");
+			await bash.writeFile("/repo/old-b.txt", "common line\nold b\n");
+			await bash.exec("git add . && git commit -m 'initial'");
+			await bash.exec("rm exact-old.txt old-a.txt old-b.txt");
+			await bash.writeFile("/repo/exact-new.txt", "exact\n");
+			await bash.writeFile("/repo/new-a.txt", "common line\nnew a\n");
+			await bash.writeFile("/repo/new-b.txt", "common line\nnew b\n");
+			await bash.exec("git add -A");
+			return bash;
+		}
+
+		test("skips inexact matching over the limit but keeps exact renames", async () => {
+			const bash = await setupRenameCandidates();
+			await bash.exec("git config diff.renameLimit 1");
+
+			const result = await bash.exec("git diff --cached --name-status");
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("R100\texact-old.txt\texact-new.txt");
+			expect(result.stdout).toContain("D\told-a.txt");
+			expect(result.stdout).toContain("A\tnew-a.txt");
+			expect(result.stderr).toBe(
+				"warning: exhaustive rename detection was skipped due to too many files.\n" +
+					"warning: you may want to set your diff.renameLimit variable to at least 2 and retry the command.\n",
+			);
+		});
+
+		test("runs inexact matching at the limit boundary", async () => {
+			const bash = await setupRenameCandidates();
+			await bash.exec("git config diff.renameLimit 2");
+
+			const result = await bash.exec("git diff --cached --name-status");
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("old-a.txt\tnew-a.txt");
+			expect(result.stderr).toBe("");
+		});
+
+		test("treats a zero limit as unlimited", async () => {
+			const bash = await setupRenameCandidates();
+			await bash.exec("git config diff.renameLimit 0");
+
+			const result = await bash.exec("git diff --cached --name-status");
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("old-a.txt\tnew-a.txt");
+			expect(result.stderr).toBe("");
+		});
+	});
+
 	describe("error cases", () => {
 		test("bad revision", async () => {
 			const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });

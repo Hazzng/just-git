@@ -11,7 +11,8 @@
  * Used by: git status, git diff --cached, commit summary, merge diffstat.
  */
 import { readBlobBytes } from "./object-db.ts";
-import type { GitRepo, TreeDiffEntry } from "./types.ts";
+import { getConfigValue } from "./config.ts";
+import type { GitContext, GitRepo, TreeDiffEntry } from "./types.ts";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -30,11 +31,20 @@ export interface RenamePair {
 	newMode?: string;
 }
 
-interface RenameResult {
+export interface RenameResult {
 	/** Diffs that were NOT collapsed into renames. */
 	remaining: TreeDiffEntry[];
 	/** Matched rename pairs. */
 	renames: RenamePair[];
+	/** Exhaustive detection was skipped; value is max(sources, destinations). */
+	neededRenameLimit?: number;
+}
+
+export interface RenameDetectionOptions {
+	/** Minimum similarity percentage (0–100). Default 50. */
+	threshold?: number;
+	/** Maximum rename-candidate dimension. Zero means unlimited. Default 1000. */
+	limit?: number;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -73,6 +83,50 @@ function pickBestExactMatch(
 
 /** Default similarity threshold (matches git's -M50%). */
 const DEFAULT_THRESHOLD = 50;
+const DEFAULT_DIFF_RENAME_LIMIT = 1000;
+const DEFAULT_MERGE_RENAME_LIMIT = 7000;
+
+/**
+ * Resolve the rename detection limit using git's config fallback rules.
+ *
+ * diff:  diff.renameLimit, then 1000
+ * merge: merge.renameLimit, then diff.renameLimit, then 7000
+ */
+export async function resolveRenameLimit(ctx: GitRepo, kind: "diff" | "merge"): Promise<number> {
+	if (!isGitContext(ctx)) {
+		return kind === "merge" ? DEFAULT_MERGE_RENAME_LIMIT : DEFAULT_DIFF_RENAME_LIMIT;
+	}
+	const mergeValue = kind === "merge" ? await getConfigValue(ctx, "merge.renameLimit") : undefined;
+	const diffValue =
+		mergeValue === undefined ? await getConfigValue(ctx, "diff.renameLimit") : undefined;
+	const configured = mergeValue ?? diffValue;
+	if (configured === undefined) {
+		return kind === "merge" ? DEFAULT_MERGE_RENAME_LIMIT : DEFAULT_DIFF_RENAME_LIMIT;
+	}
+
+	const parsed = Number(configured.trim());
+	return Number.isFinite(parsed)
+		? Math.trunc(parsed)
+		: kind === "merge"
+			? DEFAULT_MERGE_RENAME_LIMIT
+			: DEFAULT_DIFF_RENAME_LIMIT;
+}
+
+function isGitContext(ctx: GitRepo): ctx is GitContext {
+	return "fs" in ctx && "commonDir" in ctx;
+}
+
+/** Format git's two-line warning after inexact rename detection is skipped. */
+export function formatRenameLimitWarning(
+	kind: "diff" | "merge",
+	neededRenameLimit?: number,
+): string {
+	if (neededRenameLimit === undefined) return "";
+	return (
+		"warning: exhaustive rename detection was skipped due to too many files.\n" +
+		`warning: you may want to set your ${kind}.renameLimit variable to at least ${neededRenameLimit} and retry the command.\n`
+	);
+}
 
 /**
  * Detect renames in a list of tree diff entries.
@@ -83,13 +137,15 @@ const DEFAULT_THRESHOLD = 50;
  *
  * @param ctx Git context (needed for reading blobs in phase 2)
  * @param diffs Raw diff entries from diffTrees or manual construction
- * @param threshold Minimum similarity percentage (0–100). Default 50.
+ * @param options Similarity threshold and candidate limit.
  */
 export async function detectRenames(
 	ctx: GitRepo,
 	diffs: TreeDiffEntry[],
-	threshold = DEFAULT_THRESHOLD,
+	options: RenameDetectionOptions = {},
 ): Promise<RenameResult> {
+	const threshold = options.threshold ?? DEFAULT_THRESHOLD;
+	const limit = options.limit ?? DEFAULT_DIFF_RENAME_LIMIT;
 	// Partition into deleted, added, and other
 	const deletedByHash = new Map<string, TreeDiffEntry[]>();
 	const deleted: TreeDiffEntry[] = [];
@@ -143,6 +199,16 @@ export async function detectRenames(
 
 	// Collect remaining unmatched deletes
 	let unmatchedDeleted = [...deletedByHash.values()].flat();
+
+	// Git skips all inexact detection when the post-exact candidate matrix
+	// exceeds renameLimit². Exact renames above remain in the result.
+	if (limit > 0 && unmatchedDeleted.length * unmatchedAdded.length > limit * limit) {
+		return {
+			remaining: [...other, ...unmatchedDeleted, ...unmatchedAdded],
+			renames,
+			neededRenameLimit: Math.max(unmatchedDeleted.length, unmatchedAdded.length),
+		};
+	}
 
 	// ── Phase 2: Basename matching (git's find_basename_matches) ──
 	// When a basename is unique among both remaining sources and

@@ -27,6 +27,7 @@ import { getReflogIdentity } from "../lib/identity.ts";
 import { getConflictedPaths, hasConflicts, readIndex } from "../lib/index.ts";
 import { buildMergeMessage, findAllMergeBases, handleFastForward } from "../lib/merge.ts";
 import { applyMergeResult, mergeOrtRecursive } from "../lib/merge-ort.ts";
+import { formatRenameLimitWarning } from "../lib/rename-detection.ts";
 import { readCommit } from "../lib/object-db.ts";
 import { deleteStateFile, writeStateFile } from "../lib/operation-state.ts";
 import { join } from "../lib/path.ts";
@@ -585,6 +586,7 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 				labels,
 				ext?.mergeDriver,
 			);
+			const renameWarning = formatRenameLimitWarning("merge", mergeResult.neededRenameLimit);
 
 			const headCommit = await readCommit(gitCtx, headHash);
 			const applyResult = await applyMergeResult(gitCtx, mergeResult, headCommit.tree, {
@@ -614,7 +616,7 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 				}
 				return {
 					stdout: applyResult.stdout,
-					stderr: fetchOutput + applyResult.stderr,
+					stderr: fetchOutput + renameWarning + applyResult.stderr,
 					exitCode: applyResult.exitCode,
 				};
 			}
@@ -634,7 +636,7 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 
 				return {
 					stdout: `${[...mergeResult.messages, "Automatic merge failed; fix conflicts and then commit the result."].join("\n")}\n`,
-					stderr: fetchOutput,
+					stderr: fetchOutput + renameWarning,
 					exitCode: 1,
 				};
 			}
@@ -723,7 +725,7 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 				mergeResult.messages.length > 0 ? `${mergeResult.messages.join("\n")}\n` : "";
 			return {
 				stdout: `${mergeMessages}Merge made by the 'ort' strategy.\n${diffstat}`,
-				stderr: fetchOutput,
+				stderr: fetchOutput + renameWarning,
 				exitCode: 0,
 			};
 		},

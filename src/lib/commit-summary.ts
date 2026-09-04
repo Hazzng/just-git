@@ -5,7 +5,12 @@
 import { formatDate } from "./date.ts";
 import { myersDiff, splitLinesWithNL } from "./diff-algorithm.ts";
 import { isBinaryBytes, isBinaryStr, readBlobBytes, readBlobContent } from "./object-db.ts";
-import { detectRenames, formatRenamePath, type RenamePair } from "./rename-detection.ts";
+import {
+	detectRenames,
+	formatRenamePath,
+	type RenamePair,
+	resolveRenameLimit,
+} from "./rename-detection.ts";
 import { diffTrees } from "./tree-ops.ts";
 import type { GitRepo, Identity, ObjectId, TreeDiffEntry } from "./types.ts";
 
@@ -214,7 +219,10 @@ export async function formatCommitSummary(
 	}
 
 	const rawDiffs = await diffTrees(ctx, parentTree, newTree);
-	const { remaining: diffs, renames } = await detectRenames(ctx, rawDiffs);
+	const renameLimit = await resolveRenameLimit(ctx, "diff");
+	const { remaining: diffs, renames } = await detectRenames(ctx, rawDiffs, {
+		limit: renameLimit,
+	});
 	const { fileStats, modeLines } = await computeDiffStats(ctx, diffs, renames);
 
 	let totalInsertions = 0;
@@ -393,7 +401,10 @@ export async function formatDiffStat(
 	newTree: ObjectId,
 ): Promise<string> {
 	const rawDiffs = await diffTrees(ctx, oldTree, newTree);
-	const { remaining: diffs, renames } = await detectRenames(ctx, rawDiffs);
+	const renameLimit = await resolveRenameLimit(ctx, "diff");
+	const { remaining: diffs, renames } = await detectRenames(ctx, rawDiffs, {
+		limit: renameLimit,
+	});
 	if (diffs.length === 0 && renames.length === 0) return "";
 
 	const { fileStats, modeLines } = await computeDiffStats(ctx, diffs, renames);

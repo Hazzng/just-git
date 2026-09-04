@@ -19,7 +19,13 @@ import {
 	parseFormatArg,
 } from "../lib/log-format.ts";
 import { isBinaryStr, readBlobContent, readCommit, readObject, readTag } from "../lib/object-db.ts";
-import { detectRenames, formatRenamePath, type RenamePair } from "../lib/rename-detection.ts";
+import {
+	detectRenames,
+	formatRenameLimitWarning,
+	formatRenamePath,
+	type RenamePair,
+	resolveRenameLimit,
+} from "../lib/rename-detection.ts";
 import { parseRevPath } from "../lib/rev-parse.ts";
 import { parseTree } from "../lib/objects/tree.ts";
 import { join } from "../lib/path.ts";
@@ -85,6 +91,9 @@ export function registerShowCommand(parent: Command, ext?: GitExtensions) {
 			if (isCommandError(hash)) return hash;
 
 			const raw = await readObject(gitCtx, hash);
+			const renameState: RenameWarningState = {
+				limit: await resolveRenameLimit(gitCtx, "diff"),
+			};
 
 			// Determine diff output format
 			let diffFormat: ShowDiffFormat;
@@ -121,16 +130,32 @@ export function registerShowCommand(parent: Command, ext?: GitExtensions) {
 						gitCtx,
 						hash,
 						commit,
+						renameState,
 						diffFormat,
 						customFormat,
 						presetName,
 					);
-					return { stdout: output, stderr: "", exitCode: 0 };
+					return {
+						stdout: output,
+						stderr: formatRenameLimitWarning("diff", renameState.needed),
+						exitCode: 0,
+					};
 				}
 				case "tag": {
 					const tag = await readTag(gitCtx, hash);
-					const output = await formatTagShow(gitCtx, tag, diffFormat, customFormat, presetName);
-					return { stdout: output, stderr: "", exitCode: 0 };
+					const output = await formatTagShow(
+						gitCtx,
+						tag,
+						renameState,
+						diffFormat,
+						customFormat,
+						presetName,
+					);
+					return {
+						stdout: output,
+						stderr: formatRenameLimitWarning("diff", renameState.needed),
+						exitCode: 0,
+					};
 				}
 				case "tree": {
 					const tree: Tree = parseTree(raw.content);
@@ -187,10 +212,16 @@ async function handleRevPath(
 
 // ── Commit display ──────────────────────────────────────────────────
 
+interface RenameWarningState {
+	limit: number;
+	needed?: number;
+}
+
 async function formatCommitShow(
 	ctx: GitRepo,
 	hash: ObjectId,
 	commit: Commit,
+	renameState: RenameWarningState,
 	diffFormat: ShowDiffFormat = "patch",
 	customFormat: string | null = null,
 	presetName: string | null = null,
@@ -234,7 +265,14 @@ async function formatCommitShow(
 				: null;
 
 		const rawDiffs = await diffTrees(ctx, parentTree, commit.tree);
-		const { remaining: diffs, renames } = await detectRenames(ctx, rawDiffs);
+		const {
+			remaining: diffs,
+			renames,
+			neededRenameLimit,
+		} = await detectRenames(ctx, rawDiffs, {
+			limit: renameState.limit,
+		});
+		renameState.needed = Math.max(renameState.needed ?? 0, neededRenameLimit ?? 0) || undefined;
 		diffOutput = await formatShowDiff(ctx, diffs, renames, diffFormat);
 	} else {
 		if (diffFormat === "patch") {
@@ -257,6 +295,7 @@ async function formatCommitShow(
 async function formatTagShow(
 	ctx: GitRepo,
 	tag: Tag,
+	renameState: RenameWarningState,
 	diffFormat: ShowDiffFormat = "patch",
 	customFormat: string | null = null,
 	presetName: string | null = null,
@@ -278,6 +317,7 @@ async function formatTagShow(
 			ctx,
 			tag.object,
 			commit,
+			renameState,
 			diffFormat,
 			customFormat,
 			presetName,

@@ -29,6 +29,7 @@ import {
 	squashFastForward,
 } from "../lib/merge.ts";
 import { type ApplyMergeFailure, applyMergeResult, mergeOrtRecursive } from "../lib/merge-ort.ts";
+import { formatRenameLimitWarning } from "../lib/rename-detection.ts";
 import { peelToCommit, readCommit } from "../lib/object-db.ts";
 import {
 	clearMergeState,
@@ -261,6 +262,7 @@ async function handleThreeWayMerge(
 
 	// Step 1: Run merge-ort (recursive — handles criss-cross merges)
 	const result = await mergeOrtRecursive(gitCtx, headHash, theirsHash, labels, ext?.mergeDriver);
+	const renameWarning = formatRenameLimitWarning("merge", result.neededRenameLimit);
 
 	// Step 2: Apply merge result to index and worktree
 	const applyResult = await applyMergeResult(gitCtx, result, headCommit.tree, {
@@ -278,7 +280,8 @@ async function handleThreeWayMerge(
 		if (applyResult.failureKind === "staged" && head?.type === "symbolic") {
 			await logRef(gitCtx, env, "HEAD", headHash, headHash, `merge ${branchName}: updating HEAD`);
 		}
-		return applyResult as ApplyMergeFailure;
+		const failure = applyResult as ApplyMergeFailure;
+		return { ...failure, stderr: renameWarning + failure.stderr };
 	}
 
 	// Step 3: Handle conflicts or create merge commit
@@ -315,7 +318,7 @@ async function handleThreeWayMerge(
 
 		return {
 			stdout: `${mergeOutput.join("\n")}\n`,
-			stderr: "",
+			stderr: renameWarning,
 			exitCode: 1,
 		};
 	}
@@ -382,7 +385,7 @@ async function handleThreeWayMerge(
 	const mergeMessages = result.messages.length > 0 ? `${result.messages.join("\n")}\n` : "";
 	return {
 		stdout: `${mergeMessages}Merge made by the 'ort' strategy.\n${diffstat}`,
-		stderr: "",
+		stderr: renameWarning,
 		exitCode: 0,
 	};
 }
@@ -462,6 +465,7 @@ async function handleSquashMerge(
 	const labels = { a: "HEAD", b: branchName, conflictStyle };
 
 	const result = await mergeOrtRecursive(gitCtx, headHash, theirsHash, labels, _ext?.mergeDriver);
+	const renameWarning = formatRenameLimitWarning("merge", result.neededRenameLimit);
 
 	const applyResult = await applyMergeResult(gitCtx, result, headCommit.tree, {
 		labels,
@@ -476,7 +480,8 @@ async function handleSquashMerge(
 		if (applyResult.failureKind === "staged" && head?.type === "symbolic") {
 			await logRef(gitCtx, env, "HEAD", headHash, headHash, `merge ${branchName}: updating HEAD`);
 		}
-		return applyResult as ApplyMergeFailure;
+		const failure = applyResult as ApplyMergeFailure;
+		return { ...failure, stderr: renameWarning + failure.stderr };
 	}
 
 	// Real git always persists the generated squash log in SQUASH_MSG.
@@ -506,7 +511,7 @@ async function handleSquashMerge(
 
 		return {
 			stdout: `${mergeOutput.join("\n")}\n`,
-			stderr: "",
+			stderr: renameWarning,
 			exitCode: 1,
 		};
 	}
@@ -515,7 +520,7 @@ async function handleSquashMerge(
 
 	return {
 		stdout: `${mergeMessages}Squash commit -- not updating HEAD\n`,
-		stderr: "Automatic merge went well; stopped before committing as requested\n",
+		stderr: renameWarning + "Automatic merge went well; stopped before committing as requested\n",
 		exitCode: 0,
 	};
 }

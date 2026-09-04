@@ -194,6 +194,35 @@ describe("git merge", () => {
 			expect(content).toContain("MAIN");
 			expect(content).toContain("FEATURE");
 		});
+
+		test("uses merge.renameLimit and warns once when inexact detection is skipped", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO, env: envAt("100") });
+			await bash.exec("git init");
+			await bash.fs.writeFile("/repo/old-a.txt", "old a\n");
+			await bash.fs.writeFile("/repo/old-b.txt", "old b\n");
+			await bash.exec("git add . && git commit -m 'initial'");
+			await bash.exec("git branch feature");
+
+			await bash.fs.writeFile("/repo/main.txt", "main\n");
+			await bash.exec("git add . && git commit -m 'main'");
+
+			await bash.exec("git checkout feature");
+			await bash.exec("rm old-a.txt old-b.txt");
+			await bash.fs.writeFile("/repo/new-a.txt", "new a\n");
+			await bash.fs.writeFile("/repo/new-b.txt", "new b\n");
+			await bash.exec("git add -A && git commit -m 'feature'");
+
+			await bash.exec("git checkout main");
+			await bash.exec("git config diff.renameLimit 10");
+			await bash.exec("git config merge.renameLimit 1");
+			const result = await bash.exec("git merge feature");
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stderr).toBe(
+				"warning: exhaustive rename detection was skipped due to too many files.\n" +
+					"warning: you may want to set your merge.renameLimit variable to at least 2 and retry the command.\n",
+			);
+		});
 	});
 
 	// ── Three-way merge (conflicts) ─────────────────────────────────

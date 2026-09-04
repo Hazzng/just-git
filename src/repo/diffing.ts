@@ -196,6 +196,8 @@ export interface DiffOptions {
 	contextLines?: number;
 	/** Enable rename detection (default true). */
 	renames?: boolean;
+	/** Rename candidate limit (default 1000). Zero means unlimited. */
+	renameLimit?: number;
 }
 
 interface ResolvedEntry {
@@ -231,7 +233,7 @@ async function resolveDiffs(
 	let renames: RenamePair[] = [];
 
 	if (enableRenames) {
-		const result = await detectRenames(repo, diffs);
+		const result = await detectRenames(repo, diffs, { limit: options?.renameLimit });
 		diffs = result.remaining;
 		renames = result.renames;
 	}

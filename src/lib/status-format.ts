@@ -8,7 +8,7 @@ import { readDetachPoint, readStateFile } from "./operation-state.ts";
 import { join as joinPath } from "./path.ts";
 import { isRebaseInProgress, readRebaseState } from "./rebase.ts";
 import { branchNameFromRef, readHead, resolveHead, resolveRef } from "./refs.ts";
-import { detectRenames } from "./rename-detection.ts";
+import { detectRenames, resolveRenameLimit } from "./rename-detection.ts";
 import { flattenTreeToMap } from "./tree-ops.ts";
 import type { GitContext, GitRepo, Index, ObjectId, TreeDiffEntry } from "./types.ts";
 import { diffIndexToWorkTree } from "./worktree.ts";
@@ -474,7 +474,8 @@ export async function getStagedChanges(
 		}
 	}
 
-	const { remaining, renames } = await detectRenames(ctx, rawDiffs);
+	const renameLimit = await resolveRenameLimit(ctx, "diff");
+	const { remaining, renames } = await detectRenames(ctx, rawDiffs, { limit: renameLimit });
 
 	const stagedStatusMap: Record<string, string> = {
 		added: "new file",

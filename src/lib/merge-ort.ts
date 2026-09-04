@@ -27,7 +27,7 @@ import { findAllMergeBases, type MergeConflict, type MergeTreeResult } from "./m
 import { isBinaryStr, readBlobContent, readCommit, readObject, writeObject } from "./object-db.ts";
 import { serializeCommit } from "./objects/commit.ts";
 import { join } from "./path.ts";
-import { detectRenames, type RenamePair } from "./rename-detection.ts";
+import { detectRenames, type RenamePair, resolveRenameLimit } from "./rename-detection.ts";
 import { isSymlinkMode } from "./symlink.ts";
 import { buildTreeFromIndex, type FlatTreeEntry, flattenTreeToMap } from "./tree-ops.ts";
 import { checkoutEntry } from "./worktree.ts";
@@ -103,6 +103,8 @@ interface MergeOrtResult extends MergeTreeResult {
 	 * This tree can be fed to checkoutTrees() for safe worktree updates.
 	 */
 	resultTree: ObjectId;
+	/** Exhaustive rename detection was skipped; max required limit across both sides. */
+	neededRenameLimit?: number;
 }
 
 /**
@@ -380,6 +382,7 @@ interface RenameOutput {
 	conflicts: MergeConflict[];
 	msgBuf: SortableMsg[];
 	worktreeBlobs: Map<string, { hash: ObjectId; mode: string }>;
+	neededRenameLimit?: number;
 }
 
 async function detectAndProcessRenames(
@@ -441,8 +444,12 @@ async function detectAndProcessRenames(
 		}
 	}
 
-	const oursRenameResult = await detectRenames(ctx, oursDiffs);
-	const theirsRenameResult = await detectRenames(ctx, theirsDiffs);
+	const renameLimit = await resolveRenameLimit(ctx, "merge");
+	const oursRenameResult = await detectRenames(ctx, oursDiffs, { limit: renameLimit });
+	const theirsRenameResult = await detectRenames(ctx, theirsDiffs, { limit: renameLimit });
+	output.neededRenameLimit =
+		Math.max(oursRenameResult.neededRenameLimit ?? 0, theirsRenameResult.neededRenameLimit ?? 0) ||
+		undefined;
 
 	if (oursRenameResult.renames.length === 0 && theirsRenameResult.renames.length === 0) {
 		return output;
@@ -1470,7 +1477,13 @@ async function processEntries(
 	treeEntries.sort((a, b) => comparePaths(a.path, b.path));
 	const resultTree = await buildTreeFromIndex(ctx, treeEntries);
 
-	return { entries, conflicts, messages, resultTree };
+	return {
+		entries,
+		conflicts,
+		messages,
+		resultTree,
+		neededRenameLimit: renameOutput.neededRenameLimit,
+	};
 }
 
 async function processEntry(

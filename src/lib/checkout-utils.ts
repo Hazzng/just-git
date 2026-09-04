@@ -11,7 +11,13 @@ import {
 import { findOrphanedCommits } from "./commit-walk.ts";
 import { getConfigValue, readConfig, writeConfig } from "./config.ts";
 import { hashCleanedWorktreeEntry } from "./eol.ts";
-import { addEntry, defaultStat, readIndex, writeIndex } from "./index.ts";
+import {
+	addEntry,
+	defaultStat,
+	readIndex,
+	refreshIndexStatsAfterCheckout,
+	writeIndex,
+} from "./index.ts";
 import { readCommit } from "./object-db.ts";
 import { clearAllOperationState, clearDetachPoint, writeDetachPoint } from "./operation-state.ts";
 import { join } from "./path.ts";
@@ -224,6 +230,7 @@ async function restoreFromTree(
 		});
 	}
 
+	index = await refreshIndexStatsAfterCheckout(gitCtx, index, matchedPaths);
 	await writeIndex(gitCtx, index);
 	return { stdout: "", stderr: "", exitCode: 0 };
 }

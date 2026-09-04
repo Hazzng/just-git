@@ -2,7 +2,12 @@ import type { GitExtensions } from "../git.ts";
 import { isRejection } from "../hooks.ts";
 import { err, fatal } from "../lib/command-utils.ts";
 import { readConfig, writeConfig } from "../lib/config.ts";
-import { buildIndex, defaultStat, writeIndex } from "../lib/index.ts";
+import {
+	buildIndex,
+	defaultStat,
+	refreshIndexStatsAfterCheckout,
+	writeIndex,
+} from "../lib/index.ts";
 import { readCommit } from "../lib/object-db.ts";
 import { basename, resolve } from "../lib/path.ts";
 import { logRef } from "../lib/reflog.ts";
@@ -313,7 +318,7 @@ export function registerCloneCommand(parent: Command, ext?: GitExtensions) {
 					await checkoutTree(newCtx, commit.tree);
 
 					const treeEntries = await flattenTree(newCtx, commit.tree);
-					const index = buildIndex(
+					let index = buildIndex(
 						treeEntries.map((entry) => ({
 							path: entry.path,
 							mode: parseInt(entry.mode, 8),
@@ -322,6 +327,7 @@ export function registerCloneCommand(parent: Command, ext?: GitExtensions) {
 							stat: defaultStat(),
 						})),
 					);
+					index = await refreshIndexStatsAfterCheckout(newCtx, index);
 					await writeIndex(newCtx, index);
 				}
 			}

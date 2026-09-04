@@ -1,7 +1,9 @@
+import type { FileStat } from "../fs.ts";
 import { bytesToHex, hexToBytes } from "./hex.ts";
 import { verifyPath } from "./path-safety.ts";
 import { join } from "./path.ts";
 import { sha1 } from "./sha1.ts";
+import { isSubmoduleMode, lstatSafe } from "./symlink.ts";
 import type { GitContext, Index, IndexEntry, IndexStat } from "./types.ts";
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -24,8 +26,21 @@ export async function readIndex(ctx: GitContext): Promise<Index> {
 		return { version: VERSION, entries: [] };
 	}
 
+	const before = await ctx.fs.stat(path);
 	const data = await ctx.fs.readFileBuffer(path);
-	return parseIndex(data);
+	const after = await ctx.fs.stat(path);
+	const index = parseIndex(data);
+	const beforeMtime = timestampMilliseconds(before.mtime);
+	const afterMtime = timestampMilliseconds(after.mtime);
+	if (
+		before.size === data.byteLength &&
+		after.size === data.byteLength &&
+		beforeMtime !== null &&
+		beforeMtime === afterMtime
+	) {
+		index.timestamp = after.mtime;
+	}
+	return index;
 }
 
 /**
@@ -36,6 +51,8 @@ export async function writeIndex(ctx: GitContext, index: Index): Promise<void> {
 	const path = join(ctx.gitDir, "index");
 	const data = await serializeIndex(index);
 	await ctx.fs.writeFile(path, data);
+	const mtime = await ctx.fs.stat(path).then((stat) => stat.mtime);
+	index.timestamp = timestampMilliseconds(mtime) === null ? undefined : mtime;
 }
 
 /**
@@ -121,6 +138,103 @@ export function defaultStat(): IndexStat {
 		gid: 0,
 		size: 0,
 	};
+}
+
+/** Convert available filesystem metadata to the fields stored in an index entry. */
+export function indexStatFromFileStat(stat: FileStat, size: number = stat.size): IndexStat {
+	const mtime = splitTimestamp(stat.mtime);
+	const ctime = stat.ctime ? splitTimestamp(stat.ctime) : { seconds: 0, nanoseconds: 0 };
+	return {
+		ctimeSeconds: ctime.seconds,
+		ctimeNanoseconds: ctime.nanoseconds,
+		mtimeSeconds: mtime.seconds,
+		mtimeNanoseconds: mtime.nanoseconds,
+		dev: toUint32(stat.dev),
+		ino: toUint32(stat.ino),
+		uid: toUint32(stat.uid),
+		gid: toUint32(stat.gid),
+		size: toUint32(size),
+	};
+}
+
+/**
+ * Return whether an index entry's metadata safely identifies the current
+ * worktree file. Files at or newer than the index timestamp are racily clean
+ * and must still be hashed.
+ */
+export function indexStatMatchesFile(
+	entry: IndexEntry,
+	stat: FileStat,
+	indexTimestamp: Date | undefined,
+): boolean {
+	if (!indexTimestamp || !stat.isFile || stat.isSymbolicLink) return false;
+	if (entry.stat.mtimeSeconds === 0 || stat.size < 0 || stat.size > 0xffffffff) return false;
+	if (gitModeFromFileStat(stat) !== entry.mode || stat.size !== entry.stat.size) return false;
+
+	const fileMtimeMs = timestampMilliseconds(stat.mtime);
+	const indexMtimeMs = timestampMilliseconds(indexTimestamp);
+	if (
+		fileMtimeMs === null ||
+		indexMtimeMs === null ||
+		fileMtimeMs !== indexTimestampMs(entry.stat)
+	) {
+		return false;
+	}
+
+	if (stat.ctime) {
+		if (entry.stat.ctimeSeconds === 0) return false;
+		const ctimeMs =
+			entry.stat.ctimeSeconds * 1000 + Math.floor(entry.stat.ctimeNanoseconds / 1_000_000);
+		if (Math.trunc(stat.ctime.getTime()) !== ctimeMs) return false;
+	}
+	if (!optionalStatFieldMatches(stat.dev, entry.stat.dev)) return false;
+	if (!optionalStatFieldMatches(stat.ino, entry.stat.ino)) return false;
+	if (!optionalStatFieldMatches(stat.uid, entry.stat.uid)) return false;
+	if (!optionalStatFieldMatches(stat.gid, entry.stat.gid)) return false;
+
+	return fileMtimeMs < indexMtimeMs;
+}
+
+/** Convert filesystem type and executable bits to a canonical Git mode. */
+export function gitModeFromFileStat(stat: FileStat): number {
+	if (stat.isSymbolicLink) return 0o120000;
+	if (stat.isDirectory) return 0o040000;
+	return stat.mode & 0o111 ? 0o100755 : 0o100644;
+}
+
+/**
+ * Refresh stat metadata for index entries whose content a caller has just
+ * materialized in the worktree. Paths that cannot be verified by type/mode
+ * retain their existing (usually zero) metadata and will be hashed later.
+ */
+export async function refreshIndexStatsAfterCheckout(
+	ctx: GitContext,
+	index: Index,
+	paths?: Iterable<string>,
+): Promise<Index> {
+	if (!ctx.workTree) return index;
+	const selected = paths ? new Set(paths) : null;
+	const entries: IndexEntry[] = [];
+
+	for (const entry of index.entries) {
+		if (
+			entry.stage !== 0 ||
+			isSubmoduleMode(entry.mode) ||
+			(selected && !selected.has(entry.path))
+		) {
+			entries.push(entry);
+			continue;
+		}
+
+		const stat = await lstatSafe(ctx.fs, join(ctx.workTree, entry.path)).catch(() => null);
+		if (!stat || gitModeFromFileStat(stat) !== entry.mode) {
+			entries.push(entry);
+			continue;
+		}
+		entries.push({ ...entry, stat: indexStatFromFileStat(stat) });
+	}
+
+	return { ...index, entries };
 }
 
 // ── Binary parsing (Git index v2 format) ────────────────────────────
@@ -315,4 +429,34 @@ function compareEntries(a: IndexEntry, b: IndexEntry): number {
 	if (a.path < b.path) return -1;
 	if (a.path > b.path) return 1;
 	return a.stage - b.stage;
+}
+
+function splitTimestamp(date: Date | undefined): { seconds: number; nanoseconds: number } {
+	const milliseconds = timestampMilliseconds(date);
+	if (milliseconds === null) return { seconds: 0, nanoseconds: 0 };
+	const seconds = Math.floor(milliseconds / 1000);
+	return {
+		seconds: toUint32(seconds),
+		nanoseconds: (milliseconds - seconds * 1000) * 1_000_000,
+	};
+}
+
+function timestampMilliseconds(date: Date | undefined): number | null {
+	if (!(date instanceof Date)) return null;
+	const milliseconds = Math.trunc(date.getTime());
+	return Number.isFinite(milliseconds) ? milliseconds : null;
+}
+
+function toUint32(value: number | undefined): number {
+	if (value === undefined || !Number.isFinite(value) || value < 0) return 0;
+	return Math.trunc(value) >>> 0;
+}
+
+function optionalStatFieldMatches(value: number | undefined, indexed: number): boolean {
+	if (value === undefined) return true;
+	return indexed !== 0 && toUint32(value) === indexed;
+}
+
+function indexTimestampMs(stat: IndexStat): number {
+	return stat.mtimeSeconds * 1000 + Math.floor(stat.mtimeNanoseconds / 1_000_000);
 }

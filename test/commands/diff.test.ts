@@ -416,6 +416,29 @@ describe("git diff", () => {
 		expect(calls.readdirPaths).not.toContain("/repo");
 	});
 
+	test("matching index stat skips clean worktree content reads", async () => {
+		const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
+		await bash.exec("git init");
+		await bash.exec("git add .");
+		await bash.exec('git commit -m "initial"');
+
+		// Refresh only the index mtime so all tracked-file mtimes are safely older.
+		const indexData = await bash.fs.readFileBuffer("/repo/.git/index");
+		await Bun.sleep(2);
+		await bash.fs.writeFile("/repo/.git/index", indexData);
+
+		const calls = observeFsCalls(bash.fs);
+		const unstaged = await bash.exec("git diff --name-only");
+		const fromHead = await bash.exec("git diff HEAD --name-only");
+		const worktreeReads = calls.readFileBufferPaths.filter(
+			(path) => path.startsWith("/repo/") && !path.startsWith("/repo/.git/"),
+		);
+
+		expect(unstaged.stdout).toBe("");
+		expect(fromHead.stdout).toBe("");
+		expect(worktreeReads).toEqual([]);
+	});
+
 	test("hashes each modified worktree file only once during collection", async () => {
 		const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
 		await bash.exec("git init");

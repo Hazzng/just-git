@@ -9,7 +9,13 @@ import {
 	requireGitContext,
 } from "../lib/command-utils.ts";
 import { movePath } from "../lib/fs-utils.ts";
-import { buildIndex, defaultStat, readIndex, writeIndex } from "../lib/index.ts";
+import {
+	buildIndex,
+	defaultStat,
+	readIndex,
+	refreshIndexStatsAfterCheckout,
+	writeIndex,
+} from "../lib/index.ts";
 import { readCommit } from "../lib/object-db.ts";
 import { basename, dirname, join, resolve } from "../lib/path.ts";
 import { logRef, ZERO_HASH } from "../lib/reflog.ts";
@@ -400,7 +406,7 @@ async function materializeWorktree(
 	for (const entry of entries) {
 		await checkoutEntry(wtCtx, entry);
 	}
-	await writeIndex(
+	const index = await refreshIndexStatsAfterCheckout(
 		wtCtx,
 		buildIndex(
 			entries.map((e) => ({
@@ -412,6 +418,7 @@ async function materializeWorktree(
 			})),
 		),
 	);
+	await writeIndex(wtCtx, index);
 }
 
 /**

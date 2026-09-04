@@ -12,6 +12,16 @@ export interface FileStat {
 	size: number;
 	/** Last modification time. */
 	mtime: Date;
+	/** Last metadata-change time, when exposed by the filesystem. */
+	ctime?: Date;
+	/** Device identifier, when exposed by the filesystem. */
+	dev?: number;
+	/** Inode number, when exposed by the filesystem. */
+	ino?: number;
+	/** Owning user identifier, when exposed by the filesystem. */
+	uid?: number;
+	/** Owning group identifier, when exposed by the filesystem. */
+	gid?: number;
 }
 
 /**

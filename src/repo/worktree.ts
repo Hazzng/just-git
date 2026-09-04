@@ -1,4 +1,9 @@
-import { buildIndex, defaultStat, writeIndex } from "../lib/index.ts";
+import {
+	buildIndex,
+	defaultStat,
+	refreshIndexStatsAfterCheckout,
+	writeIndex,
+} from "../lib/index.ts";
 import { readCommit as _readCommit } from "../lib/object-db.ts";
 import { join } from "../lib/path.ts";
 import { flattenTree as _flattenTree, type FlatTreeEntry } from "../lib/tree-ops.ts";
@@ -127,7 +132,8 @@ export async function createWorktree(
 	};
 
 	const filesWritten = await materializeEntries(repo, entries, fs, workTree);
-	await writeIndex(ctx, indexFromEntries(entries));
+	const index = await refreshIndexStatsAfterCheckout(ctx, indexFromEntries(entries));
+	await writeIndex(ctx, index);
 
 	return { ctx, commitHash, treeHash: commit.tree, filesWritten };
 }

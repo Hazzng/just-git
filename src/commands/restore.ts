@@ -8,7 +8,14 @@ import {
 	requireCommit,
 	requireGitContext,
 } from "../lib/command-utils.ts";
-import { addEntry, defaultStat, readIndex, removeEntry, writeIndex } from "../lib/index.ts";
+import {
+	addEntry,
+	defaultStat,
+	readIndex,
+	refreshIndexStatsAfterCheckout,
+	removeEntry,
+	writeIndex,
+} from "../lib/index.ts";
 import { readCommit } from "../lib/object-db.ts";
 import { matchPathspecs, parsePathspec } from "../lib/pathspec.ts";
 import { resolveHead } from "../lib/refs.ts";
@@ -276,6 +283,7 @@ async function restoreStagedAndWorktree(
 		}
 	}
 
+	index = await refreshIndexStatsAfterCheckout(gitCtx, index, matchedPaths);
 	await writeIndex(gitCtx, index);
 	return { stdout: "", stderr: "", exitCode: 0 };
 }

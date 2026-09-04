@@ -1,7 +1,13 @@
 import { comparePaths } from "./command-utils.ts";
 import { cleanForCheckin, getEolPolicy, hashCleanedWorktreeEntry, lfToCrlf } from "./eol.ts";
 import { type IgnoreStack, isIgnored, loadBaseIgnore, pushDirIgnore } from "./ignore.ts";
-import { addEntry, defaultStat, findEntry } from "./index.ts";
+import {
+	addEntry,
+	findEntry,
+	gitModeFromFileStat,
+	indexStatFromFileStat,
+	indexStatMatchesFile,
+} from "./index.ts";
 import { readObject, writeObject } from "./object-db.ts";
 import { isInsideWorkTree, verifyPath, verifySymlinkTarget } from "./path-safety.ts";
 import { dirname, join } from "./path.ts";
@@ -77,6 +83,8 @@ export async function diffIndexToWorkTree(
 			if (stopAfterFirst) return results;
 			continue;
 		}
+
+		if (indexStatMatchesFile(entry, st, index.timestamp)) continue;
 
 		const workTreeHash = await hashCleanedWorktreeEntry(ctx, fullPath, entry.hash, st);
 
@@ -238,7 +246,7 @@ export async function stageFile(
 			mode: 0o120000,
 			hash,
 			stage: 0,
-			stat: { ...defaultStat(), size: targetBytes.byteLength },
+			stat: indexStatFromFileStat(st, targetBytes.byteLength),
 		};
 		return { index: addEntry(index, entry), hash };
 	}
@@ -247,17 +255,14 @@ export async function stageFile(
 	const blobContent = await cleanForCheckin(ctx, content, findEntry(index, path)?.hash);
 	const hash = await writeObject(ctx, "blob", blobContent);
 
-	const mode = st.mode != null ? toGitMode(st.mode) : 0o100644;
+	const mode = gitModeFromFileStat(st);
 	const entry: IndexEntry = {
 		path,
 		mode,
 		hash,
 		stage: 0,
-		stat: {
-			...defaultStat(),
-			// Index stat data describes the worktree file, not the cleaned blob.
-			size: content.byteLength,
-		},
+		// Index stat data describes the worktree file, not the cleaned blob.
+		stat: indexStatFromFileStat(st, content.byteLength),
 	};
 
 	return { index: addEntry(index, entry), hash };
@@ -346,20 +351,6 @@ export async function walkWorkTree(
 	}
 
 	return results;
-}
-
-/**
- * Convert a filesystem mode to a Git mode.
- * The virtual FS gives us Unix permission bits (e.g. 0o644, 0o755).
- * We need to produce full Git modes (e.g. 0o100644, 0o100755).
- */
-function toGitMode(fsMode: number): number {
-	// Check if it's already a full Git mode (has the file type bits)
-	if (fsMode > 0o777) return fsMode;
-
-	// Check if executable bit is set
-	if (fsMode & 0o111) return 0o100755;
-	return 0o100644;
 }
 
 // ── Empty directory cleanup ─────────────────────────────────────────

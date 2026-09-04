@@ -476,7 +476,7 @@ export async function getStagedChanges(
 		}
 	}
 
-	const renameLimit = await resolveRenameLimit(ctx, "diff");
+	const renameLimit = await resolveRenameLimit(ctx, "status");
 	const { remaining, renames } = await detectRenames(ctx, rawDiffs, { limit: renameLimit });
 
 	const stagedStatusMap: Record<string, string> = {

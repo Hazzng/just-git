@@ -445,6 +445,27 @@ describe("git status", () => {
 			expect(status.stdout).toContain("R  README.md -> RENAMED.md");
 		});
 
+		test("status.renameLimit overrides diff.renameLimit", async () => {
+			const bash = createTestBash({ env: TEST_ENV });
+			const common = "common line\n".repeat(20);
+			await bash.exec("git init");
+			await bash.fs.writeFile("/repo/old-a.txt", `${common}old a\n`);
+			await bash.fs.writeFile("/repo/old-b.txt", `${common}old b\n`);
+			await bash.exec("git add . && git commit -m 'initial'");
+			await bash.exec("rm old-a.txt old-b.txt");
+			await bash.fs.writeFile("/repo/new-a.txt", `${common}new a\n`);
+			await bash.fs.writeFile("/repo/new-b.txt", `${common}new b\n`);
+			await bash.exec("git add -A");
+			await bash.exec("git config diff.renameLimit 10");
+			await bash.exec("git config status.renameLimit 1");
+
+			const status = await bash.exec("git status --short");
+
+			expect(status.stdout).toContain("A  new-a.txt");
+			expect(status.stdout).toContain("D  old-a.txt");
+			expect(status.stdout).not.toContain("R  ");
+		});
+
 		test("shows UU for both-modified merge conflicts", async () => {
 			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
 			await bash.exec("git init");

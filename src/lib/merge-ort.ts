@@ -226,7 +226,7 @@ export async function mergeOrtRecursive(
 	}
 
 	// Multiple LCAs — recursively merge pairwise to produce virtual base.
-	const baseTree = await computeRecursiveMergeBase(
+	const recursiveBase = await computeRecursiveMergeBase(
 		ctx,
 		oursHash,
 		theirsHash,
@@ -237,13 +237,18 @@ export async function mergeOrtRecursive(
 
 	const result = await mergeOrtNonRecursive(
 		ctx,
-		baseTree,
+		recursiveBase.tree,
 		oursCommit.tree,
 		theirsCommit.tree,
 		labels,
 		mergeDriver,
 	);
-	return { ...result, baseTree };
+	return {
+		...result,
+		baseTree: recursiveBase.tree,
+		neededRenameLimit:
+			Math.max(result.neededRenameLimit ?? 0, recursiveBase.neededRenameLimit ?? 0) || undefined,
+	};
 }
 
 // ── Phase 1: Collect merge info ─────────────────────────────────────
@@ -1753,6 +1758,11 @@ async function processEntry(
 /** Git's GIT_MERGE_DEFAULT_CALL_DEPTH — cap recursion depth. */
 const MAX_MERGE_CALL_DEPTH = 200;
 
+interface RecursiveMergeBaseResult {
+	tree: ObjectId;
+	neededRenameLimit?: number;
+}
+
 async function computeRecursiveMergeBase(
 	ctx: GitRepo,
 	_oursHash: ObjectId,
@@ -1760,7 +1770,7 @@ async function computeRecursiveMergeBase(
 	bases: ObjectId[],
 	callDepth: number,
 	mergeDriver?: MergeDriver,
-): Promise<ObjectId> {
+): Promise<RecursiveMergeBaseResult> {
 	// Sort merge bases oldest-first (ascending by commit timestamp)
 	const basesWithTimestamp = await Promise.all(
 		bases.map(async (hash) => ({
@@ -1774,6 +1784,7 @@ async function computeRecursiveMergeBase(
 	const firstBase = sortedBases[0]!;
 	let virtualCommitHash: ObjectId = firstBase;
 	let virtualTree = (await readCommit(ctx, firstBase)).tree;
+	let neededRenameLimit: number | undefined;
 
 	for (let i = 1; i < sortedBases.length; i++) {
 		const nextBase = sortedBases[i]!;
@@ -1791,7 +1802,7 @@ async function computeRecursiveMergeBase(
 			} else if (innerBases.length === 1) {
 				innerBaseTree = (await readCommit(ctx, innerBases[0]!)).tree;
 			} else {
-				innerBaseTree = await computeRecursiveMergeBase(
+				const innerResult = await computeRecursiveMergeBase(
 					ctx,
 					virtualCommitHash,
 					nextBase,
@@ -1799,6 +1810,9 @@ async function computeRecursiveMergeBase(
 					callDepth + 1,
 					mergeDriver,
 				);
+				innerBaseTree = innerResult.tree;
+				neededRenameLimit =
+					Math.max(neededRenameLimit ?? 0, innerResult.neededRenameLimit ?? 0) || undefined;
 			}
 		}
 
@@ -1811,6 +1825,8 @@ async function computeRecursiveMergeBase(
 			undefined,
 			mergeDriver,
 		);
+		neededRenameLimit =
+			Math.max(neededRenameLimit ?? 0, result.neededRenameLimit ?? 0) || undefined;
 
 		// Build virtual tree from merge result, resolving conflicts
 		virtualTree = await resolveVirtualBaseConflicts(ctx, result, callDepth);
@@ -1827,7 +1843,7 @@ async function computeRecursiveMergeBase(
 		virtualCommitHash = await writeObject(ctx, "commit", virtualCommitContent);
 	}
 
-	return virtualTree;
+	return { tree: virtualTree, neededRenameLimit };
 }
 
 /**

@@ -85,31 +85,42 @@ function pickBestExactMatch(
 const DEFAULT_THRESHOLD = 50;
 const DEFAULT_DIFF_RENAME_LIMIT = 1000;
 const DEFAULT_MERGE_RENAME_LIMIT = 7000;
+type RenameLimitKind = "diff" | "merge" | "status";
 
 /**
  * Resolve the rename detection limit using git's config fallback rules.
  *
- * diff:  diff.renameLimit, then 1000
- * merge: merge.renameLimit, then diff.renameLimit, then 7000
+ * diff:   diff.renameLimit, then 1000
+ * merge:  merge.renameLimit, then diff.renameLimit, then 7000
+ * status: status.renameLimit, then diff.renameLimit, then 1000
  */
-export async function resolveRenameLimit(ctx: GitRepo, kind: "diff" | "merge"): Promise<number> {
+export async function resolveRenameLimit(ctx: GitRepo, kind: RenameLimitKind): Promise<number> {
 	if (!isGitContext(ctx)) {
 		return kind === "merge" ? DEFAULT_MERGE_RENAME_LIMIT : DEFAULT_DIFF_RENAME_LIMIT;
 	}
-	const mergeValue = kind === "merge" ? await getConfigValue(ctx, "merge.renameLimit") : undefined;
+	const specificValue =
+		kind === "merge"
+			? await getConfigValue(ctx, "merge.renameLimit")
+			: kind === "status"
+				? await getConfigValue(ctx, "status.renameLimit")
+				: undefined;
 	const diffValue =
-		mergeValue === undefined ? await getConfigValue(ctx, "diff.renameLimit") : undefined;
-	const configured = mergeValue ?? diffValue;
+		specificValue === undefined ? await getConfigValue(ctx, "diff.renameLimit") : undefined;
+	const configured = specificValue ?? diffValue;
 	if (configured === undefined) {
 		return kind === "merge" ? DEFAULT_MERGE_RENAME_LIMIT : DEFAULT_DIFF_RENAME_LIMIT;
 	}
 
-	const parsed = Number(configured.trim());
-	return Number.isFinite(parsed)
-		? Math.trunc(parsed)
-		: kind === "merge"
-			? DEFAULT_MERGE_RENAME_LIMIT
-			: DEFAULT_DIFF_RENAME_LIMIT;
+	const match = /^([+-]?\d+)([kKmMgG]?)$/.exec(configured.trim());
+	const suffix = match?.[2]?.toLowerCase();
+	const multiplier =
+		suffix === "k" ? 1024 : suffix === "m" ? 1024 ** 2 : suffix === "g" ? 1024 ** 3 : 1;
+	const parsed = match ? Number(match[1]) * multiplier : Number.NaN;
+	if (!Number.isSafeInteger(parsed)) {
+		const key = specificValue !== undefined ? `${kind}.renamelimit` : "diff.renamelimit";
+		throw new Error(`fatal: bad numeric config value '${configured}' for '${key}'`);
+	}
+	return parsed;
 }
 
 function isGitContext(ctx: GitRepo): ctx is GitContext {
@@ -200,16 +211,6 @@ export async function detectRenames(
 	// Collect remaining unmatched deletes
 	let unmatchedDeleted = [...deletedByHash.values()].flat();
 
-	// Git skips all inexact detection when the post-exact candidate matrix
-	// exceeds renameLimit². Exact renames above remain in the result.
-	if (limit > 0 && unmatchedDeleted.length * unmatchedAdded.length > limit * limit) {
-		return {
-			remaining: [...other, ...unmatchedDeleted, ...unmatchedAdded],
-			renames,
-			neededRenameLimit: Math.max(unmatchedDeleted.length, unmatchedAdded.length),
-		};
-	}
-
 	// ── Phase 2: Basename matching (git's find_basename_matches) ──
 	// When a basename is unique among both remaining sources and
 	// remaining destinations, check similarity and pair if above
@@ -229,6 +230,16 @@ export async function detectRenames(
 			unmatchedAdded = unmatchedAdded.filter((a) => !matchedAddPaths.has(a.path));
 			renames.push(...basenameRenames);
 		}
+	}
+
+	// Git skips exhaustive similarity detection when the candidates left
+	// after exact and basename matching exceed renameLimit².
+	if (limit > 0 && unmatchedDeleted.length * unmatchedAdded.length > limit * limit) {
+		return {
+			remaining: [...other, ...unmatchedDeleted, ...unmatchedAdded],
+			renames,
+			neededRenameLimit: Math.max(unmatchedDeleted.length, unmatchedAdded.length),
+		};
 	}
 
 	// ── Phase 3: Similarity-based matching ───────────────────────

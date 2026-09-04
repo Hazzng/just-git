@@ -1011,6 +1011,37 @@ describe("git diff", () => {
 			expect(result.stdout).toContain("old-a.txt\tnew-a.txt");
 			expect(result.stderr).toBe("");
 		});
+
+		test("performs basename matching before enforcing the limit", async () => {
+			const bash = createTestBash({ env: TEST_ENV });
+			const common = "common line\n".repeat(20);
+			await bash.exec("git init");
+			await bash.writeFile("/repo/old/a.txt", `${common}old a\n`);
+			await bash.writeFile("/repo/old/b.txt", `${common}old b\n`);
+			await bash.exec("git add . && git commit -m 'initial'");
+			await bash.exec("rm -rf old");
+			await bash.writeFile("/repo/new/a.txt", `${common}new a\n`);
+			await bash.writeFile("/repo/new/b.txt", `${common}new b\n`);
+			await bash.exec("git add -A");
+			await bash.exec("git config diff.renameLimit 1");
+
+			const result = await bash.exec("git diff --cached --name-status");
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain("old/a.txt\tnew/a.txt");
+			expect(result.stdout).toContain("old/b.txt\tnew/b.txt");
+			expect(result.stderr).toBe("");
+		});
+
+		test("rejects malformed rename limits", async () => {
+			const bash = await setupRenameCandidates();
+			await bash.exec("git config diff.renameLimit nope");
+
+			const result = await bash.exec("git diff --cached --name-status");
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toBe("fatal: bad numeric config value 'nope' for 'diff.renamelimit'");
+		});
 	});
 
 	describe("error cases", () => {

@@ -416,6 +416,21 @@ describe("git diff", () => {
 		expect(calls.readdirPaths).not.toContain("/repo");
 	});
 
+	test("hashes each modified worktree file only once during collection", async () => {
+		const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
+		await bash.exec("git init");
+		await bash.exec("git add .");
+		await bash.exec('git commit -m "initial"');
+		await bash.exec('echo "changed" > /repo/README.md');
+
+		const calls = observeFsCalls(bash.fs);
+		const result = await bash.exec("git diff --name-only");
+
+		expect(result.stdout).toBe("README.md\n");
+		expect(calls.lstatPaths.filter((path) => path === "/repo/README.md")).toHaveLength(1);
+		expect(calls.readFileBufferPaths.filter((path) => path === "/repo/README.md")).toHaveLength(1);
+	});
+
 	describe("commit-to-worktree shows new files", () => {
 		test("new staged file appears as A", async () => {
 			const bash = createTestBash({ files: { "/repo/a.txt": "a\n" }, env: TEST_ENV });

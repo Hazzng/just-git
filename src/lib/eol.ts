@@ -1,7 +1,10 @@
+import type { FileStat } from "../fs.ts";
 import { getConfigValue } from "./config.ts";
 import { hashObject, isBinaryBytes, readObject } from "./object-db.ts";
-import { lstatSafe, readWorktreeContent } from "./symlink.ts";
+import { lstatSafe } from "./symlink.ts";
 import type { GitContext, ObjectId } from "./types.ts";
+
+const encoder = new TextEncoder();
 
 // ── Line-ending conversion (git's convert.c crlf machinery) ─────────
 //
@@ -207,10 +210,14 @@ export async function hashCleanedWorktreeEntry(
 	ctx: GitContext,
 	fullPath: string,
 	referenceHash?: ObjectId,
+	knownStat?: FileStat,
 ): Promise<ObjectId> {
-	const st = await lstatSafe(ctx.fs, fullPath);
+	const st = knownStat ?? (await lstatSafe(ctx.fs, fullPath));
 	if (st.isSymbolicLink) {
-		return hashObject("blob", await readWorktreeContent(ctx.fs, fullPath));
+		const content = ctx.fs.readlink
+			? encoder.encode(await ctx.fs.readlink(fullPath))
+			: await ctx.fs.readFileBuffer(fullPath);
+		return hashObject("blob", content);
 	}
 	const content = await ctx.fs.readFileBuffer(fullPath);
 	return cleanedWorktreeHash(ctx, content, referenceHash);

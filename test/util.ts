@@ -13,11 +13,14 @@ export function createTestBash(options: Partial<BashOptions> = {}): Bash {
 export function observeFsCalls(fs: IFileSystem): {
 	readdirPaths: string[];
 	lstatPaths: string[];
+	readFileBufferPaths: string[];
 } {
 	const readdirPaths: string[] = [];
 	const lstatPaths: string[] = [];
+	const readFileBufferPaths: string[] = [];
 	const readdir = fs.readdir.bind(fs);
 	const lstat = fs.lstat.bind(fs);
+	const readFileBuffer = fs.readFileBuffer.bind(fs);
 	fs.readdir = async (path) => {
 		readdirPaths.push(path);
 		return readdir(path);
@@ -26,7 +29,11 @@ export function observeFsCalls(fs: IFileSystem): {
 		lstatPaths.push(path);
 		return lstat(path);
 	};
-	return { readdirPaths, lstatPaths };
+	fs.readFileBuffer = async (path) => {
+		readFileBufferPaths.push(path);
+		return readFileBuffer(path);
+	};
+	return { readdirPaths, lstatPaths, readFileBufferPaths };
 }
 
 /** Shorthand: create a bash env, run a single command, return the result. */

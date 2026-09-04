@@ -78,13 +78,14 @@ export async function diffIndexToWorkTree(
 			continue;
 		}
 
-		const workTreeHash = await hashCleanedWorktreeEntry(ctx, fullPath, entry.hash);
+		const workTreeHash = await hashCleanedWorktreeEntry(ctx, fullPath, entry.hash, st);
 
 		if (workTreeHash !== entry.hash) {
 			results.push({
 				path: entry.path,
 				status: "modified",
 				indexHash: entry.hash,
+				worktreeHash: workTreeHash,
 			});
 			if (stopAfterFirst) return results;
 		}

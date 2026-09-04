@@ -300,4 +300,6 @@ export interface WorkTreeDiff {
 	status: DiffStatus | "untracked";
 	/** Index hash (undefined if untracked). */
 	indexHash?: ObjectId;
+	/** Hash computed from modified worktree content during comparison. */
+	worktreeHash?: ObjectId;
 }

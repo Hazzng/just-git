@@ -230,18 +230,12 @@ async function collectUnstaged(
 		if (!indexEntry) continue;
 
 		const oldMode = fmtMode(indexEntry.mode);
-		let newHash: string | undefined;
-		if (diff.status === "modified" && gitCtx.workTree) {
-			const fullPath = join(gitCtx.workTree, diff.path);
-			const bytes = await gitCtx.fs.readFileBuffer(fullPath);
-			newHash = await cleanedWorktreeHash(gitCtx, bytes, indexEntry.hash);
-		}
 
 		items.push({
 			path: diff.path,
 			status: diff.status === "deleted" ? "D" : "M",
 			oldHash: indexEntry.hash,
-			newHash,
+			newHash: diff.worktreeHash,
 			oldMode,
 			newMode: oldMode,
 			newFromWorkTree: diff.status === "modified",

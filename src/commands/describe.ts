@@ -265,6 +265,9 @@ async function isDirty(ctx: GitContext): Promise<boolean> {
 
 	if (hasStagedChanges(index, headMap)) return true;
 
-	const worktreeDiff = await diffIndexToWorkTree(ctx, index);
+	const worktreeDiff = await diffIndexToWorkTree(ctx, index, {
+		includeUntracked: false,
+		stopAfterFirst: true,
+	});
 	return worktreeDiff.length > 0;
 }

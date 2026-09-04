@@ -80,7 +80,9 @@ export function registerCommitCommand(parent: Command, ext?: GitExtensions) {
 			if (args.all) {
 				const workTreeError = requireWorkTree(gitCtx);
 				if (workTreeError) return workTreeError;
-				const diffs = await diffIndexToWorkTree(gitCtx, index);
+				const diffs = await diffIndexToWorkTree(gitCtx, index, {
+					includeUntracked: false,
+				});
 				for (const diff of diffs) {
 					if (diff.status === "modified") {
 						const result = await stageFile(gitCtx, index, diff.path);

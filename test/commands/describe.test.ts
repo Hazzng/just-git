@@ -226,6 +226,18 @@ describe("git describe", () => {
 			expect(results[4]!.stdout.trim()).toBe("v1.0.0");
 		});
 
+		test("does not consider untracked files dirty", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			await bash.exec('git tag -a v1.0.0 -m "r1"');
+			await bash.fs.writeFile("/repo/untracked.txt", "untracked\n");
+
+			const result = await bash.exec("git describe --dirty");
+			expect(result.stdout.trim()).toBe("v1.0.0");
+		});
+
 		test("custom dirty suffix", async () => {
 			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
 			await bash.exec("git init");

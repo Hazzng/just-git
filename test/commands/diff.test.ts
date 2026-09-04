@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BASIC_REPO, EMPTY_REPO, TEST_ENV_NAMED as TEST_ENV } from "../fixtures";
-import { createTestBash, quickExec } from "../util";
+import { createTestBash, observeFsCalls, quickExec } from "../util";
 
 describe("git diff", () => {
 	describe("outside a git repo", () => {
@@ -341,6 +341,21 @@ describe("git diff", () => {
 	});
 
 	describe("pathspec filtering with format flags", () => {
+		test("does not inspect tracked paths outside the pathspec", async () => {
+			const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			await bash.exec('echo "changed" > /repo/README.md');
+
+			const calls = observeFsCalls(bash.fs);
+			const result = await bash.exec("git diff --name-only -- README.md");
+
+			expect(result.stdout).toBe("README.md\n");
+			expect(calls.lstatPaths).toContain("/repo/README.md");
+			expect(calls.lstatPaths).not.toContain("/repo/src/main.ts");
+		});
+
 		test("--name-only with pathspec", async () => {
 			const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
 			await bash.exec("git init");
@@ -385,6 +400,20 @@ describe("git diff", () => {
 			expect(result.stdout).toContain("README.md");
 			expect(result.stdout).not.toContain("src/main.ts");
 		});
+	});
+
+	test("does not walk the worktree for untracked files", async () => {
+		const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
+		await bash.exec("git init");
+		await bash.exec("git add .");
+		await bash.exec('git commit -m "initial"');
+		await bash.fs.writeFile("/repo/untracked.txt", "untracked\n");
+
+		const calls = observeFsCalls(bash.fs);
+		const result = await bash.exec("git diff --name-only");
+
+		expect(result.stdout).toBe("");
+		expect(calls.readdirPaths).not.toContain("/repo");
 	});
 
 	describe("commit-to-worktree shows new files", () => {

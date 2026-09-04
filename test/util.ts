@@ -10,6 +10,25 @@ export function createTestBash(options: Partial<BashOptions> = {}): Bash {
 	return new Bash({ cwd: "/repo", ...options, customCommands });
 }
 
+export function observeFsCalls(fs: IFileSystem): {
+	readdirPaths: string[];
+	lstatPaths: string[];
+} {
+	const readdirPaths: string[] = [];
+	const lstatPaths: string[] = [];
+	const readdir = fs.readdir.bind(fs);
+	const lstat = fs.lstat.bind(fs);
+	fs.readdir = async (path) => {
+		readdirPaths.push(path);
+		return readdir(path);
+	};
+	fs.lstat = async (path) => {
+		lstatPaths.push(path);
+		return lstat(path);
+	};
+	return { readdirPaths, lstatPaths };
+}
+
 /** Shorthand: create a bash env, run a single command, return the result. */
 export async function quickExec(
 	command: string,

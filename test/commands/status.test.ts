@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BASIC_REPO, EMPTY_REPO, NESTED_REPO, TEST_ENV } from "../fixtures";
-import { createTestBash, quickExec, runScenario } from "../util";
+import { createTestBash, observeFsCalls, quickExec, runScenario } from "../util";
 
 describe("git status", () => {
 	describe("outside a git repo", () => {
@@ -82,6 +82,21 @@ describe("git status", () => {
 		test("--untracked-files=no is equivalent to -uno", async () => {
 			const bash = await setupUntracked();
 			expect((await bash.exec("git status --short --untracked-files=no")).stdout).toBe("");
+		});
+
+		test("-uno skips the untracked worktree walk in short and long formats", async () => {
+			const bash = createTestBash({ files: {}, cwd: "/repo", env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.fs.writeFile("/repo/tracked.txt", "a\n");
+			await bash.exec("git add tracked.txt");
+			await bash.exec('git commit -m "init"');
+			await bash.fs.writeFile("/repo/untracked.txt", "untracked\n");
+
+			for (const command of ["git status --short -uno", "git status -uno"]) {
+				const calls = observeFsCalls(bash.fs);
+				await bash.exec(command);
+				expect(calls.readdirPaths).not.toContain("/repo");
+			}
 		});
 
 		test("-uno long format notes the omission in the footer", async () => {

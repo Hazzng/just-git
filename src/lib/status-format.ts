@@ -72,7 +72,10 @@ export async function generateLongFormStatus(
 	const stagedRef = opts?.compareHash !== undefined ? opts.compareHash : headHash;
 	const isInitial = opts?.compareHash !== undefined ? !opts.compareHash : !headHash;
 	const staged = await getStagedChanges(gitCtx, stagedRef, index, unmerged);
-	const workTreeDiffs = await diffIndexToWorkTree(gitCtx, index);
+	const untrackedMode = opts?.untrackedMode ?? "normal";
+	const workTreeDiffs = await diffIndexToWorkTree(gitCtx, index, {
+		includeUntracked: untrackedMode !== "no",
+	});
 	const unstaged: StatusEntry[] = [];
 	const untracked: string[] = [];
 	for (const diff of workTreeDiffs) {
@@ -83,7 +86,6 @@ export async function generateLongFormStatus(
 		}
 	}
 	unstaged.sort((a, b) => comparePaths(a.path, b.path));
-	const untrackedMode = opts?.untrackedMode ?? "normal";
 	const trackedPaths = new Set(index.entries.map((e) => e.path));
 	const collapsedUntracked =
 		untrackedMode === "no"

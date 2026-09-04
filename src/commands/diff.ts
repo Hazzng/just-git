@@ -216,14 +216,14 @@ async function collectUnstaged(
 		}
 	}
 
-	const workTreeDiffs = await diffIndexToWorkTree(gitCtx, index);
-	workTreeDiffs.sort((a, b) => comparePaths(a.path, b.path));
+	const workTreeDiffs = await diffIndexToWorkTree(gitCtx, index, {
+		includeUntracked: false,
+		pathFilter: pathFilter ? (path) => matchPathspecs(pathFilter, path) : undefined,
+	});
 
 	const items: DiffFileResult[] = [];
 
 	for (const diff of workTreeDiffs) {
-		if (diff.status === "untracked") continue;
-		if (pathFilter && !matchPathspecs(pathFilter, diff.path)) continue;
 		if (unmergedPaths.has(diff.path)) continue;
 
 		const indexEntry = stage0.get(diff.path);

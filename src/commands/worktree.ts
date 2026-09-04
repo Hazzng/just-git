@@ -552,7 +552,7 @@ async function worktreeIsDirty(gitCtx: GitContext, wt: WorktreeInfo): Promise<bo
 	// An unmerged (conflicted) entry shows up in `git status` and makes the
 	// worktree dirty, even when no file content differs from the index.
 	if (index.entries.some((e) => e.stage !== 0)) return true;
-	if ((await diffIndexToWorkTree(wtCtx, index)).length > 0) return true;
+	if ((await diffIndexToWorkTree(wtCtx, index, { stopAfterFirst: true })).length > 0) return true;
 
 	const headHash = await resolveHead(wtCtx);
 	if (!headHash) return index.entries.length > 0;

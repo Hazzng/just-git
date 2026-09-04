@@ -18,17 +18,34 @@ const decoder = new TextDecoder();
  * Compare the index against the working tree.
  * Returns entries that differ: modified files, deleted files, and untracked files.
  */
-export async function diffIndexToWorkTree(ctx: GitContext, index: Index): Promise<WorkTreeDiff[]> {
+export interface WorkTreeDiffOptions {
+	/** Include untracked files. Defaults to true for backward compatibility. */
+	includeUntracked?: boolean;
+	/** Return as soon as the first matching difference is found. */
+	stopAfterFirst?: boolean;
+	/** Limit comparison to matching repository-relative paths. */
+	pathFilter?: (path: string) => boolean;
+}
+
+export async function diffIndexToWorkTree(
+	ctx: GitContext,
+	index: Index,
+	opts?: WorkTreeDiffOptions,
+): Promise<WorkTreeDiff[]> {
 	if (!ctx.workTree) {
 		throw new Error("Cannot diff working tree in a bare repository");
 	}
 
+	const includeUntracked = opts?.includeUntracked ?? true;
+	const stopAfterFirst = opts?.stopAfterFirst ?? false;
+	const pathFilter = opts?.pathFilter;
 	const results: WorkTreeDiff[] = [];
 
 	// Check each index entry against the working tree
 	for (const entry of index.entries) {
 		if (entry.stage !== 0) continue; // skip conflict entries
 		if (isSubmoduleMode(entry.mode)) continue; // skip submodule (gitlink) entries
+		if (pathFilter && !pathFilter(entry.path)) continue;
 
 		const fullPath = join(ctx.workTree, entry.path);
 
@@ -47,6 +64,7 @@ export async function diffIndexToWorkTree(ctx: GitContext, index: Index): Promis
 				status: "deleted",
 				indexHash: entry.hash,
 			});
+			if (stopAfterFirst) return results;
 			continue;
 		}
 
@@ -56,6 +74,7 @@ export async function diffIndexToWorkTree(ctx: GitContext, index: Index): Promis
 				status: "deleted",
 				indexHash: entry.hash,
 			});
+			if (stopAfterFirst) return results;
 			continue;
 		}
 
@@ -67,19 +86,26 @@ export async function diffIndexToWorkTree(ctx: GitContext, index: Index): Promis
 				status: "modified",
 				indexHash: entry.hash,
 			});
+			if (stopAfterFirst) return results;
 		}
+	}
+
+	if (!includeUntracked) {
+		return results.sort((a, b) => comparePaths(a.path, b.path));
 	}
 
 	// Find untracked files (respecting .gitignore)
 	const indexPaths = new Set(index.entries.map((e) => e.path));
-	const workTreeFiles = await walkWorkTree(ctx, ctx.workTree, "");
+	const workTreeFiles = await walkWorkTree(ctx, ctx.workTree, "", {
+		stopAfterFirst,
+		_fileFilter: (path) => !indexPaths.has(path) && (!pathFilter || pathFilter(path)),
+	});
 
 	for (const filePath of workTreeFiles) {
-		if (!indexPaths.has(filePath)) {
-			results.push({ path: filePath, status: "untracked" });
-		}
+		results.push({ path: filePath, status: "untracked" });
 	}
 
+	if (stopAfterFirst) return results;
 	return results.sort((a, b) => comparePaths(a.path, b.path));
 }
 
@@ -245,8 +271,12 @@ interface WalkOptions {
 	 * where tracked files matching ignore patterns must still be visible.
 	 */
 	skipIgnore?: boolean;
+	/** Stop after finding the first file accepted by the filter. */
+	stopAfterFirst?: boolean;
 	/** Internal: ignore stack passed through on recursive calls. */
 	_ignore?: IgnoreStack;
+	/** Internal: select files to include in the result. */
+	_fileFilter?: (path: string) => boolean;
 }
 
 /**
@@ -263,6 +293,8 @@ export async function walkWorkTree(
 	opts?: WalkOptions,
 ): Promise<string[]> {
 	const skipIgnore = opts?.skipIgnore ?? false;
+	const stopAfterFirst = opts?.stopAfterFirst ?? false;
+	const fileFilter = opts?._fileFilter;
 
 	let stack: IgnoreStack | null = null;
 	if (!skipIgnore) {
@@ -291,22 +323,25 @@ export async function walkWorkTree(
 			if (stack && isIgnored(stack, relativePath, false) === "ignored") {
 				continue;
 			}
-			results.push(relativePath);
+			if (!fileFilter || fileFilter(relativePath)) results.push(relativePath);
 		} else if (st.isDirectory) {
 			if (stack && isIgnored(stack, relativePath, true) === "ignored") {
 				continue;
 			}
 			const subResults = await walkWorkTree(ctx, fullPath, relativePath, {
 				skipIgnore,
+				stopAfterFirst,
 				_ignore: stack ?? undefined,
+				_fileFilter: fileFilter,
 			});
 			results.push(...subResults);
 		} else if (st.isFile) {
 			if (stack && isIgnored(stack, relativePath, false) === "ignored") {
 				continue;
 			}
-			results.push(relativePath);
+			if (!fileFilter || fileFilter(relativePath)) results.push(relativePath);
 		}
+		if (stopAfterFirst && results.length > 0) break;
 	}
 
 	return results;

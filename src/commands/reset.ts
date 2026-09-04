@@ -224,7 +224,7 @@ async function formatUnstagedAfterReset(
 		if (e.stage > 0) unmergedPaths.add(e.path);
 	}
 
-	const diffs = await diffIndexToWorkTree(gitCtx, index);
+	const diffs = await diffIndexToWorkTree(gitCtx, index, { includeUntracked: false });
 	const unstaged = diffs.filter((d) => d.status === "modified" || d.status === "deleted");
 
 	if (unstaged.length === 0 && unmergedPaths.size === 0) return "";

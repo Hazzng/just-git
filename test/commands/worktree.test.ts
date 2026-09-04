@@ -577,6 +577,23 @@ describe("git worktree remove / prune / lock / unlock", () => {
 		expect(await pathExists(bash.fs, "/dirty")).toBe(true);
 	});
 
+	test("remove refuses a worktree with only untracked files", async () => {
+		const { results, bash } = await runScenario(
+			[
+				...SETUP,
+				"git worktree add /dirty -b dirty",
+				"echo untracked > /dirty/untracked.txt",
+				"git worktree remove /dirty",
+			],
+			{ files: FILES, env: TEST_ENV },
+		);
+		expect(results[5].exitCode).toBe(128);
+		expect(results[5].stderr).toBe(
+			"fatal: '/dirty' contains modified or untracked files, use --force to delete it\n",
+		);
+		expect(await pathExists(bash.fs, "/dirty")).toBe(true);
+	});
+
 	test("remove -f deletes a dirty worktree", async () => {
 		const { results, bash } = await runScenario(
 			[

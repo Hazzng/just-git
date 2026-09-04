@@ -66,7 +66,9 @@ export function registerStatusCommand(parent: Command, ext?: GitExtensions) {
 			const index = await readIndex(gitCtx);
 			const unmerged = getUnmergedPaths(index);
 			const staged = await getStagedChanges(gitCtx, headHash, index, unmerged);
-			const workTreeDiffs = await diffIndexToWorkTree(gitCtx, index);
+			const workTreeDiffs = await diffIndexToWorkTree(gitCtx, index, {
+				includeUntracked: untrackedMode !== "no",
+			});
 			const unstaged: StatusEntry[] = [];
 			const untracked: string[] = [];
 

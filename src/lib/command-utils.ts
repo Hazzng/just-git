@@ -222,8 +222,11 @@ export async function getSequencerDirtyState(
 	const headCommit = await readCommit(gitCtx, headHash);
 	const headMap = await flattenTreeToMap(gitCtx, headCommit.tree);
 	const hasStaged = hasStagedChanges(index, headMap);
-	const wtDiffs = await diffIndexToWorkTree(gitCtx, index);
-	const hasUnstaged = wtDiffs.some((d) => d.status === "modified" || d.status === "deleted");
+	const wtDiffs = await diffIndexToWorkTree(gitCtx, index, {
+		includeUntracked: false,
+		stopAfterFirst: true,
+	});
+	const hasUnstaged = wtDiffs.length > 0;
 
 	if (!hasStaged && !hasUnstaged) return null;
 	return { hasStaged, hasUnstaged };

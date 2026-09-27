@@ -4,6 +4,7 @@ import { type IgnoreStack, isIgnored, loadBaseIgnore, pushDirIgnore } from "./ig
 import {
 	addEntry,
 	findEntry,
+	getIndexTimestamp,
 	gitModeFromFileStat,
 	indexStatFromFileStat,
 	indexStatMatchesFile,
@@ -45,6 +46,7 @@ export async function diffIndexToWorkTree(
 	const includeUntracked = opts?.includeUntracked ?? true;
 	const stopAfterFirst = opts?.stopAfterFirst ?? false;
 	const pathFilter = opts?.pathFilter;
+	const indexTimestamp = getIndexTimestamp(index);
 	const results: WorkTreeDiff[] = [];
 
 	// Check each index entry against the working tree
@@ -84,7 +86,7 @@ export async function diffIndexToWorkTree(
 			continue;
 		}
 
-		if (indexStatMatchesFile(entry, st, index.timestamp)) continue;
+		if (indexStatMatchesFile(entry, st, indexTimestamp)) continue;
 
 		const workTreeHash = await hashCleanedWorktreeEntry(ctx, fullPath, entry.hash, st);
 

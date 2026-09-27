@@ -14,7 +14,18 @@ const SIGNATURE = 0x44495243;
 /** We use index format version 2. */
 const VERSION = 2;
 
+/** Mtime of the on-disk index each in-memory index was read from or written to. */
+const indexTimestamps = new WeakMap<Index, Date>();
+
 // ── Public API ──────────────────────────────────────────────────────
+
+/**
+ * Return the index file mtime used for racy-clean checks, if known.
+ * Entries modified at or after this time cannot be trusted by stat alone.
+ */
+export function getIndexTimestamp(index: Index): Date | undefined {
+	return indexTimestamps.get(index);
+}
 
 /**
  * Read and parse the .git/index file.
@@ -38,7 +49,7 @@ export async function readIndex(ctx: GitContext): Promise<Index> {
 		beforeMtime !== null &&
 		beforeMtime === afterMtime
 	) {
-		index.timestamp = after.mtime;
+		indexTimestamps.set(index, after.mtime);
 	}
 	return index;
 }
@@ -46,13 +57,31 @@ export async function readIndex(ctx: GitContext): Promise<Index> {
 /**
  * Serialize and write the index to .git/index.
  * Entries are sorted by path (as Git requires).
+ *
+ * Entries whose mtime is not older than the written index file are racily
+ * clean: a same-size edit in the same timestamp tick would be invisible to
+ * stat checks once a later write advances the index mtime. Like Git, such
+ * entries are smudged (their mtime zeroed, in `index` and on disk) so they
+ * are always content-hashed until restaged.
  */
 export async function writeIndex(ctx: GitContext, index: Index): Promise<void> {
 	const path = join(ctx.gitDir, "index");
-	const data = await serializeIndex(index);
-	await ctx.fs.writeFile(path, data);
-	const mtime = await ctx.fs.stat(path).then((stat) => stat.mtime);
-	index.timestamp = timestampMilliseconds(mtime) === null ? undefined : mtime;
+	await ctx.fs.writeFile(path, await serializeIndex(index));
+	let mtime = await statMtime(ctx, path);
+	if (mtime === null) {
+		indexTimestamps.delete(index);
+		return;
+	}
+
+	if (smudgeRacyEntries(index, mtime)) {
+		await ctx.fs.writeFile(path, await serializeIndex(index));
+		mtime = await statMtime(ctx, path);
+		if (mtime === null) {
+			indexTimestamps.delete(index);
+			return;
+		}
+	}
+	indexTimestamps.set(index, mtime);
 }
 
 /**
@@ -78,15 +107,15 @@ export function addEntry(index: Index, entry: IndexEntry): Index {
 	}
 	entries.push(entry);
 	entries.sort(compareEntries);
-	return { ...index, entries };
+	return withEntries(index, entries);
 }
 
 /** Remove all entries for a given path (returns a new Index). */
 export function removeEntry(index: Index, path: string): Index {
-	return {
-		...index,
-		entries: index.entries.filter((e) => e.path !== path),
-	};
+	return withEntries(
+		index,
+		index.entries.filter((e) => e.path !== path),
+	);
 }
 
 /** Find an entry by path (stage 0 by default). */
@@ -234,7 +263,7 @@ export async function refreshIndexStatsAfterCheckout(
 		entries.push({ ...entry, stat: indexStatFromFileStat(stat) });
 	}
 
-	return { ...index, entries };
+	return withEntries(index, entries);
 }
 
 // ── Binary parsing (Git index v2 format) ────────────────────────────
@@ -459,4 +488,33 @@ function optionalStatFieldMatches(value: number | undefined, indexed: number): b
 
 function indexTimestampMs(stat: IndexStat): number {
 	return stat.mtimeSeconds * 1000 + Math.floor(stat.mtimeNanoseconds / 1_000_000);
+}
+
+function withEntries(index: Index, entries: IndexEntry[]): Index {
+	const next = { ...index, entries };
+	const timestamp = indexTimestamps.get(index);
+	if (timestamp) indexTimestamps.set(next, timestamp);
+	return next;
+}
+
+async function statMtime(ctx: GitContext, path: string): Promise<Date | null> {
+	const { mtime } = await ctx.fs.stat(path);
+	return timestampMilliseconds(mtime) === null ? null : mtime;
+}
+
+/** Zero the mtime of stage-0 entries not strictly older than `indexMtime`. */
+function smudgeRacyEntries(index: Index, indexMtime: Date): boolean {
+	const indexMs = Math.trunc(indexMtime.getTime());
+	let smudged = false;
+	for (let i = 0; i < index.entries.length; i++) {
+		const entry = index.entries[i]!;
+		if (entry.stage !== 0 || entry.stat.mtimeSeconds === 0) continue;
+		if (indexTimestampMs(entry.stat) < indexMs) continue;
+		index.entries[i] = {
+			...entry,
+			stat: { ...entry.stat, mtimeSeconds: 0, mtimeNanoseconds: 0 },
+		};
+		smudged = true;
+	}
+	return smudged;
 }

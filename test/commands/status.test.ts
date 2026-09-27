@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { BASIC_REPO, EMPTY_REPO, NESTED_REPO, TEST_ENV } from "../fixtures";
 import { createTestBash, observeFsCalls, quickExec, runScenario } from "../util";
 
@@ -712,6 +712,58 @@ describe("git status", () => {
 			// Unmerged paths should be gone
 			status = await bash.exec("git status");
 			expect(status.stdout).not.toContain("Unmerged paths:");
+		});
+	});
+
+	describe("racily clean index entries", () => {
+		afterEach(() => setSystemTime());
+
+		async function stageThenEditInSameTick() {
+			setSystemTime(new Date("2026-09-04T12:00:00.000Z"));
+			const bash = createTestBash({ files: {}, cwd: "/repo", env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.fs.writeFile("/repo/f.txt", "aaa\n");
+			await bash.exec("git add f.txt");
+			await bash.fs.writeFile("/repo/f.txt", "bbb\n");
+			return bash;
+		}
+
+		test("same-size edit stays visible after a later index write", async () => {
+			const bash = await stageThenEditInSameTick();
+
+			setSystemTime(new Date("2026-09-04T12:00:01.000Z"));
+			await bash.fs.writeFile("/repo/g.txt", "g\n");
+			await bash.exec("git add g.txt");
+
+			expect((await bash.exec("git status --porcelain")).stdout).toBe("AM f.txt\nA  g.txt\n");
+			expect((await bash.exec("git diff --name-only")).stdout).toBe("f.txt\n");
+		});
+
+		test("same-size edit stays visible after commit rewrites the index", async () => {
+			const bash = await stageThenEditInSameTick();
+
+			setSystemTime(new Date("2026-09-04T12:00:01.000Z"));
+			await bash.exec('git commit -m "init"');
+
+			expect((await bash.exec("git status --porcelain")).stdout).toBe(" M f.txt\n");
+		});
+
+		test("entries older than the index still skip content reads", async () => {
+			setSystemTime(new Date("2026-09-04T12:00:00.000Z"));
+			const bash = createTestBash({ files: {}, cwd: "/repo", env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.fs.writeFile("/repo/f.txt", "aaa\n");
+
+			setSystemTime(new Date("2026-09-04T12:00:01.000Z"));
+			await bash.fs.writeFile("/repo/g.txt", "g\n");
+			await bash.exec("git add f.txt g.txt");
+
+			setSystemTime(new Date("2026-09-04T12:00:02.000Z"));
+			const calls = observeFsCalls(bash.fs);
+			expect((await bash.exec("git status --porcelain")).stdout).toBe("A  f.txt\nA  g.txt\n");
+			expect(calls.readFileBufferPaths).not.toContain("/repo/f.txt");
+			// g.txt was staged in the same tick the index was written, so it was smudged.
+			expect(calls.readFileBufferPaths).toContain("/repo/g.txt");
 		});
 	});
 });

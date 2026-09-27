@@ -10,7 +10,12 @@ export interface FileStat {
 	mode: number;
 	/** File size in bytes (0 for directories). */
 	size: number;
-	/** Last modification time. */
+	/**
+	 * Last modification time. Must change whenever file content changes:
+	 * just-git skips hashing tracked files whose size and mtime match the
+	 * index. Return `new Date(0)` if the backend does not track modification
+	 * times, which disables that shortcut.
+	 */
 	mtime: Date;
 	/** Last metadata-change time, when exposed by the filesystem. */
 	ctime?: Date;

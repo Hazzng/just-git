@@ -139,8 +139,6 @@ export interface IndexEntry {
 export interface Index {
 	version: number;
 	entries: IndexEntry[];
-	/** Runtime-only mtime of the index file used for racy-clean checks. */
-	timestamp?: Date;
 }
 
 // ── Ref store ───────────────────────────────────────────────────────

@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.8.3
+
+### Added
+
+- Honor `diff.renameLimit`, `merge.renameLimit`, and `status.renameLimit` with git's fallback rules and defaults (1000 for diff/status, 7000 for merge; `0` means unlimited). When inexact rename detection is skipped, `diff`, `log`, `show`, `merge`, and `pull` print git's "exhaustive rename detection was skipped" warning. Exact and basename matches are still found above the limit. The repo API's `DiffOptions` gains a matching `renameLimit` option.
+- `FileStat` gains optional `ctime`, `dev`, `ino`, `uid`, and `gid` fields. Filesystems that expose them strengthen the index stat cache (below).
+
+### Changed
+
+- Worktree comparisons (`status`, `diff`, `commit -a`, `reset`, `describe --dirty`, …) now skip content hashing for tracked files whose size, mtime, and mode match the index, like real git's stat cache. Staging, clone, checkout/restore, and worktree creation record file metadata in the index; racily clean entries are smudged and always hashed. On a clean 8,000-file repo, `git diff HEAD --numstat` drops from ~770 ms to ~230 ms. **Custom `FileSystem` implementations must update `mtime` whenever file content changes** (return `new Date(0)` if modification times aren't tracked, which disables the shortcut).
+- Faster worktree diffing: `status -uno`, `diff`, `commit -a`, and `reset` no longer walk the worktree for untracked files, pathspec-limited `diff` only inspects matching paths, dirty checks stop at the first difference, and each modified file is hashed once per command.
+
+### Fixed
+
+- `git describe --dirty` no longer treats untracked files as dirty.
+- `git diff <commit>` now composes staged and unstaged changes the way git does: a staged deletion stays deleted even if an untracked file occupies the path, staged changes reverted in the worktree produce no diff, conflicted paths compare the worktree result against the commit, and clean committed symlinks no longer appear as modified.
+- Serve protocol v0 upload-pack over SSH statefully. The server previously read the whole request before replying, so shallow clones and fetches with many local-only commits hung against stateful SSH clients. It now sends the shallow update after the want section and ACK/NAK after each batch of haves, like git's upload-pack.
+- The `ssh2` adapter example in the server docs now waits for each `stream.write` and closes with `stream.end()`, so packs larger than the SSH window are no longer truncated. Update adapters copied from the old example.
+
 ## 1.8.2
 
 ### Added

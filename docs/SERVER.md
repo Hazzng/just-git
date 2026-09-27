@@ -261,8 +261,11 @@ new Server({ hostKeys: [hostKey] }, (client) => {
           },
         }),
         writable: new WritableStream({
+          // Wait for ssh2 to accept each chunk, or large packs get truncated.
           write(chunk) {
-            stream.write(chunk);
+            return new Promise<void>((resolve, reject) => {
+              stream.write(chunk, (err) => (err ? reject(err) : resolve()));
+            });
           },
         }),
         writeStderr(data) {
@@ -271,7 +274,7 @@ new Server({ hostKeys: [hostKey] }, (client) => {
       };
       server.handleSession(info.command, channel, { username }).then((code) => {
         stream.exit(code);
-        stream.close();
+        stream.end();
       });
     });
   });

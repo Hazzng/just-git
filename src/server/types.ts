@@ -306,11 +306,16 @@ export interface GitServer<A = Auth> {
 	 *             stream.on("end", () => c.close());
 	 *           },
 	 *         }),
-	 *         writable: new WritableStream({ write(chunk) { stream.write(chunk); } }),
+	 *         // Wait for ssh2 to accept each chunk, or large packs get truncated.
+	 *         writable: new WritableStream({
+	 *           write: (chunk) => new Promise((resolve, reject) => {
+	 *             stream.write(chunk, (err) => (err ? reject(err) : resolve()));
+	 *           }),
+	 *         }),
 	 *         writeStderr(data) { stream.stderr.write(data); },
 	 *       };
 	 *       server.handleSession(info.command, channel, { username: ctx.username })
-	 *         .then((code) => { stream.exit(code); stream.close(); });
+	 *         .then((code) => { stream.exit(code); stream.end(); });
 	 *     });
 	 *   });
 	 * });

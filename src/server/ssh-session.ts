@@ -13,16 +13,25 @@ import {
 	advertiseRefsWithHooks,
 	buildAuthorizedFetchSet,
 	buildRefListBytes,
+	buildNegotiatedPackResponse,
 	buildV2CapabilityAdvertisementBytes,
+	checkAuthorizedWants,
+	existingHashes,
 	handleLsRefs,
-	handleUploadPack,
 	handleV2Fetch,
 	ingestReceivePackFromStream,
 	applyReceivePack,
+	resolveUploadPackShallow,
 	type AuthorizedFetchSet,
 	type ReceivePackLimitOptions,
 } from "./operations.ts";
-import { buildReportStatus, type PushCommand } from "./protocol.ts";
+import {
+	buildReportStatus,
+	buildShallowOnlyResponse,
+	parseUploadPackRequest,
+	type PushCommand,
+} from "./protocol.ts";
+import { encodePktLine } from "../lib/transport/pkt-line.ts";
 import type { ServerHooks, Auth, SshChannel, Rejection } from "./types.ts";
 import { RequestLimitError } from "./errors.ts";
 
@@ -132,16 +141,19 @@ export async function handleSshSession<A = Auth>(
 		try {
 			if (service === "git-upload-pack") {
 				const authorizedFetchSet = hooks?.advertiseRefs ? buildAuthorizedFetchSet(adv) : undefined;
-				const requestBody = await readUploadPackRequest(streamReader, fetchLimits?.maxRequestBytes);
-				const result = await handleUploadPack(repo, requestBody, {
+				const result = await serveUploadPackStateful(streamReader, writer, repo, {
 					cache: packCache,
 					cacheKey: repoId,
 					noDelta: packOptions?.noDelta,
 					deltaWindow: packOptions?.deltaWindow,
 					authorizedFetchSet,
+					maxRequestBytes: fetchLimits?.maxRequestBytes,
 				});
 				if (isRejection(result)) return sendRejection(channel, result);
-				await writeResponse(writer, result);
+				if (result !== 0) {
+					sendStderr(channel, `fatal: ${result.protocolError}\n`);
+					return 128;
+				}
 			} else {
 				const { commands, capabilities } = await readReceivePackCommands(streamReader);
 				const packStream = streamReader.streamRemaining();
@@ -340,30 +352,117 @@ class StreamPktLineReader {
 	}
 }
 
+// ── Upload-pack (protocol v0/v1, stateful) ──────────────────────────
+
+interface StatefulUploadPackOptions {
+	cache?: PackCache;
+	cacheKey?: string;
+	noDelta?: boolean;
+	deltaWindow?: number;
+	authorizedFetchSet?: AuthorizedFetchSet;
+	maxRequestBytes?: number;
+}
+
 /**
- * Read an upload-pack request by parsing pkt-lines until "done".
+ * Serve upload-pack over a stateful connection, mirroring git's own
+ * upload-pack. Unlike a stateless HTTP request, the client pauses for
+ * replies mid-request and never sends EOF, so each phase must be
+ * answered before the client will continue:
  *
- * The git client keeps the SSH channel open during upload-pack — it
- * sends wants/haves/done and waits for the pack response without
- * sending EOF. We must stop reading at the protocol boundary.
+ *   want section, flush  → shallow update (only when a depth was requested)
+ *   have batch, flush    → `ACK <hash> common` per known have, then `NAK`
+ *   done                 → final `ACK <last common>` (or `NAK`), then pack
+ *
+ * `ACK ready` is never sent, so the client negotiates until it runs out
+ * of haves or gives up, then sends "done".
  */
-async function readUploadPackRequest(
+async function serveUploadPackStateful(
 	reader: StreamPktLineReader,
-	maxBytes?: number,
-): Promise<Uint8Array> {
-	const parts: Uint8Array[] = [];
-	let totalBytes = 0;
-	while (true) {
+	writer: WritableStreamDefaultWriter<Uint8Array>,
+	repo: GitRepo,
+	options: StatefulUploadPackOptions,
+): Promise<0 | Rejection | { protocolError: string }> {
+	let requestBytes = 0;
+	const readLine = async () => {
 		const line = await reader.readPktLine();
-		if (!line) break;
-		totalBytes += line.raw.byteLength;
-		if (maxBytes !== undefined && totalBytes > maxBytes) {
-			throw new RequestLimitError("Request body too large");
+		if (line) {
+			requestBytes += line.raw.byteLength;
+			if (options.maxRequestBytes !== undefined && requestBytes > options.maxRequestBytes) {
+				throw new RequestLimitError("Request body too large");
+			}
 		}
-		parts.push(line.raw);
-		if (line.type === "data" && line.text.trimEnd() === "done") break;
+		return line;
+	};
+
+	const wantSection: Uint8Array[] = [];
+	while (true) {
+		const line = await readLine();
+		// EOF or a bare flush: the client only wanted the ref advertisement.
+		if (!line) return 0;
+		if (line.type === "flush") break;
+		wantSection.push(line.raw);
 	}
-	return concatBytes(parts);
+	if (wantSection.length === 0) return 0;
+
+	const request = parseUploadPackRequest(concatBytes(wantSection));
+	if (request.wants.length === 0) return 0;
+	const rejection = checkAuthorizedWants(request.wants, options.authorizedFetchSet);
+	if (rejection) return rejection;
+
+	const shallow = await resolveUploadPackShallow(repo, request);
+	if (shallow.info) await writer.write(buildShallowOnlyResponse(shallow.info));
+
+	const multiAck = request.capabilities.includes("multi_ack_detailed");
+	const commons: string[] = [];
+	const commonSet = new Set<string>();
+	let pending: string[] = [];
+	const ackPending = async () => {
+		if (pending.length === 0) return;
+		const present = await existingHashes(repo.objectStore, pending);
+		const acks: Uint8Array[] = [];
+		for (const hash of pending) {
+			if (!present.has(hash) || commonSet.has(hash)) continue;
+			commonSet.add(hash);
+			commons.push(hash);
+			if (multiAck) acks.push(encodePktLine(`ACK ${hash} common\n`));
+			else if (commons.length === 1) acks.push(encodePktLine(`ACK ${hash}\n`));
+		}
+		pending = [];
+		if (acks.length > 0) await writer.write(concatBytes(acks));
+	};
+
+	while (true) {
+		const line = await readLine();
+		if (!line) return 0;
+		if (line.type === "flush") {
+			await ackPending();
+			if (commons.length === 0 || multiAck) await writer.write(encodePktLine("NAK\n"));
+			continue;
+		}
+		const text = line.type === "data" ? line.text.trimEnd() : "";
+		if (text.startsWith("have ")) {
+			pending.push(text.slice(5));
+			continue;
+		}
+		if (text === "done") break;
+		return { protocolError: `git upload-pack: expected SHA1 list, got '${text}'` };
+	}
+	await ackPending();
+
+	// Without multi_ack the single ACK was already sent during negotiation.
+	const last = commons[commons.length - 1];
+	let preamble: Uint8Array[] = [];
+	if (!last) preamble = [encodePktLine("NAK\n")];
+	else if (multiAck) preamble = [encodePktLine(`ACK ${last}\n`)];
+	const response = await buildNegotiatedPackResponse(
+		repo,
+		{ ...request, haves: commons },
+		shallow,
+		preamble,
+		options,
+	);
+	await writeResponse(writer, response);
+	return 0;
 }
 
 /**

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { Server, type ServerChannel } from "ssh2";
+import { writeObject } from "../../src/lib/object-db.ts";
 import { createCommit, writeBlob, writeTree } from "../../src/repo/writing.ts";
 import { createServer } from "../../src/server/handler.ts";
 import { MemoryStorage } from "../../src/server/memory-storage.ts";
@@ -28,7 +29,9 @@ function wrapSsh2Channel(stream: ServerChannel): SshChannel {
 		}),
 		writable: new WritableStream({
 			write(chunk) {
-				stream.write(chunk);
+				return new Promise<void>((resolve, reject) => {
+					stream.write(chunk, (err?: Error | null) => (err ? reject(err) : resolve()));
+				});
 			},
 		}),
 		writeStderr(data: Uint8Array) {
@@ -123,7 +126,7 @@ describe("SSH session handler", () => {
 							})
 							.then((code) => {
 								stream.exit(code);
-								stream.close();
+								stream.end();
 							});
 					});
 				});
@@ -440,7 +443,127 @@ describe("SSH session handler", () => {
 
 		await cleanupDir(workDir);
 	});
+
+	test.skipIf(!hasHostKey)(
+		"real git clone over SSH of a pack larger than the SSH window",
+		async () => {
+			// ssh2's initial channel window is 2 MiB; random bytes don't compress or deltify.
+			const big = new Uint8Array(6 * 1024 * 1024);
+			for (let i = 0; i < big.byteLength; i += 65536) {
+				crypto.getRandomValues(big.subarray(i, i + 65536));
+			}
+			await createLinearRepo("big-repo", 1, big);
+
+			const workDir = await createSshTestDir();
+			const clone = await runGit(
+				["clone", "ssh://test@127.0.0.1/big-repo", "cloned"],
+				workDir,
+				sshTestEnv(sshPort, workDir),
+			);
+			expect(clone.exitCode).toBe(0);
+			expect(readFileSync(`${workDir}/cloned/file.bin`).byteLength).toBe(big.byteLength);
+
+			await cleanupDir(workDir);
+		},
+		60_000,
+	);
+
+	test.skipIf(!hasHostKey)(
+		"real git shallow clone over SSH",
+		async () => {
+			const tip = await createLinearRepo("shallow-repo", 5);
+
+			const workDir = await createSshTestDir();
+			const env = sshTestEnv(sshPort, workDir);
+			const clone = await runGit(
+				["clone", "--depth", "2", "ssh://test@127.0.0.1/shallow-repo", "cloned"],
+				workDir,
+				env,
+			);
+			expect(clone.exitCode).toBe(0);
+
+			const log = await runGit(["rev-list", "HEAD"], `${workDir}/cloned`, env);
+			expect(log.stdout.trim().split("\n")).toHaveLength(2);
+			expect(log.stdout.startsWith(tip)).toBe(true);
+
+			const deepen = await runGit(["fetch", "--depth", "4"], `${workDir}/cloned`, env);
+			expect(deepen.exitCode).toBe(0);
+			const deeper = await runGit(["rev-list", "HEAD"], `${workDir}/cloned`, env);
+			expect(deeper.stdout.trim().split("\n")).toHaveLength(4);
+
+			await cleanupDir(workDir);
+		},
+		60_000,
+	);
+
+	test.skipIf(!hasHostKey)(
+		"real git fetch over SSH negotiates across multiple have batches",
+		async () => {
+			await createLinearRepo("negotiate-repo", 3);
+
+			const workDir = await createSshTestDir();
+			const env = {
+				...sshTestEnv(sshPort, workDir),
+				GIT_AUTHOR_NAME: "SSH Test",
+				GIT_AUTHOR_EMAIL: "ssh@test.com",
+				GIT_COMMITTER_NAME: "SSH Test",
+				GIT_COMMITTER_EMAIL: "ssh@test.com",
+			};
+			const repoDir = `${workDir}/work`;
+			expect(
+				(await runGit(["clone", "ssh://test@127.0.0.1/negotiate-repo", "work"], workDir, env))
+					.exitCode,
+			).toBe(0);
+
+			// git sends haves in batches of 16 and waits for a reply after the second flush.
+			for (let i = 0; i < 40; i++) {
+				await runGit(["commit", "--allow-empty", "-q", "-m", `local ${i}`], repoDir, env);
+			}
+			const remoteTip = await createLinearRepo("negotiate-repo", 1);
+
+			const fetch = await runGit(["fetch", "origin"], repoDir, env);
+			expect(fetch.exitCode).toBe(0);
+			const fetched = await runGit(["rev-parse", "origin/main"], repoDir, env);
+			expect(fetched.stdout.trim()).toBe(remoteTip);
+
+			await cleanupDir(workDir);
+		},
+		60_000,
+	);
+
+	/** Append `count` commits to `refs/heads/main` of `name` (creating it), returning the new tip. */
+	async function createLinearRepo(name: string, count: number, content?: Uint8Array) {
+		const repo = (await server.repo(name)) ?? (await server.createRepo(name));
+		const head = await repo.refStore.readRef("refs/heads/main");
+		let tip = head?.type === "direct" ? head.hash : "";
+		for (let i = 0; i < count; i++) {
+			const blob = content
+				? await writeObject(repo, "blob", content)
+				: await writeBlob(repo, `${name} commit ${i} ${tip}`);
+			const tree = await writeTree(repo, [{ name: content ? "file.bin" : "file.txt", hash: blob }]);
+			tip = await createCommit(repo, {
+				tree,
+				parents: tip ? [tip] : [],
+				author: TEST_IDENTITY,
+				committer: TEST_IDENTITY,
+				message: `${name} ${i}\n`,
+			});
+		}
+		await repo.refStore.writeRef("refs/heads/main", { type: "direct", hash: tip });
+		return tip;
+	}
 });
+
+async function runGit(args: string[], cwd: string, env: Record<string, string>) {
+	const proc = Bun.spawn(["git", ...args], {
+		cwd,
+		env,
+		stdout: "pipe",
+		stderr: "pipe",
+		timeout: 30_000,
+	});
+	return collectProc(proc);
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 

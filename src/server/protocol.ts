@@ -93,7 +93,7 @@ export function buildRefAdvertisement(
 
 // ── Upload-pack request parsing ─────────────────────────────────────
 
-interface UploadPackRequest {
+export interface UploadPackRequest {
 	wants: string[];
 	haves: string[];
 	capabilities: string[];
@@ -182,29 +182,33 @@ export function buildUploadPackResponse(
 	commonHashes?: string[],
 	shallowInfo?: ShallowUpdate,
 ): Uint8Array {
-	const parts: Uint8Array[] = [];
+	return framePackResponse(
+		buildStatelessUploadPackPreamble(commonHashes, shallowInfo),
+		packData,
+		useSideband,
+	);
+}
 
-	if (shallowInfo) {
-		for (const hash of shallowInfo.shallow) {
-			parts.push(encodePktLine(`shallow ${hash}\n`));
-		}
-		for (const hash of shallowInfo.unshallow) {
-			parts.push(encodePktLine(`unshallow ${hash}\n`));
-		}
-		parts.push(flushPkt());
-	}
+/**
+ * Build a response containing only the shallow-update section.
+ * Sent after the want section when the client requested a depth:
+ * as the whole response to a stateless (HTTP) request without
+ * "done", or mid-conversation on a stateful (SSH) connection.
+ */
+export function buildShallowOnlyResponse(shallowInfo: ShallowUpdate): Uint8Array {
+	return concatPktLines(...shallowUpdateLines(shallowInfo));
+}
 
-	if (commonHashes && commonHashes.length > 0) {
-		for (const hash of commonHashes) {
-			parts.push(encodePktLine(`ACK ${hash} common\n`));
-		}
-		const lastCommon = commonHashes[commonHashes.length - 1];
-		parts.push(encodePktLine(`ACK ${lastCommon} ready\n`));
-		parts.push(encodePktLine(`ACK ${lastCommon}\n`));
-	} else {
-		parts.push(encodePktLine("NAK\n"));
-	}
-
+/**
+ * Emit `preamble` (negotiation pkt-lines chosen by the caller) followed
+ * by the pack, wrapped in sideband-64k band-1 packets when negotiated.
+ */
+export function framePackResponse(
+	preamble: Uint8Array[],
+	packData: Uint8Array,
+	useSideband: boolean,
+): Uint8Array {
+	const parts = [...preamble];
 	if (useSideband) {
 		let offset = 0;
 		while (offset < packData.byteLength) {
@@ -218,62 +222,16 @@ export function buildUploadPackResponse(
 		line.set(packData);
 		parts.push(line);
 	}
-
 	return concatPktLines(...parts);
 }
 
-/**
- * Build a response containing only the shallow-update section.
- * Used during the first phase of shallow HTTP negotiation when the
- * client has not yet sent "done".
- */
-export function buildShallowOnlyResponse(shallowInfo: ShallowUpdate): Uint8Array {
-	const parts: Uint8Array[] = [];
-	for (const hash of shallowInfo.shallow) {
-		parts.push(encodePktLine(`shallow ${hash}\n`));
-	}
-	for (const hash of shallowInfo.unshallow) {
-		parts.push(encodePktLine(`unshallow ${hash}\n`));
-	}
-	parts.push(flushPkt());
-	return concatPktLines(...parts);
-}
-
-/**
- * Streaming variant of `buildUploadPackResponse`. Yields the NAK/ACK
- * preamble first, then wraps each incoming pack chunk in sideband-64k
- * pkt-lines and yields them incrementally.
- */
-export async function* buildUploadPackResponseStreaming(
+/** Streaming variant of `framePackResponse`. */
+export async function* framePackResponseStreaming(
+	preamble: Uint8Array[],
 	packChunks: AsyncIterable<Uint8Array>,
 	useSideband: boolean,
-	commonHashes?: string[],
-	shallowInfo?: ShallowUpdate,
 ): AsyncGenerator<Uint8Array> {
-	if (shallowInfo) {
-		const shallowParts: Uint8Array[] = [];
-		for (const hash of shallowInfo.shallow) {
-			shallowParts.push(encodePktLine(`shallow ${hash}\n`));
-		}
-		for (const hash of shallowInfo.unshallow) {
-			shallowParts.push(encodePktLine(`unshallow ${hash}\n`));
-		}
-		shallowParts.push(flushPkt());
-		yield concatPktLines(...shallowParts);
-	}
-
-	const preamble: Uint8Array[] = [];
-	if (commonHashes && commonHashes.length > 0) {
-		for (const hash of commonHashes) {
-			preamble.push(encodePktLine(`ACK ${hash} common\n`));
-		}
-		const lastCommon = commonHashes[commonHashes.length - 1];
-		preamble.push(encodePktLine(`ACK ${lastCommon} ready\n`));
-		preamble.push(encodePktLine(`ACK ${lastCommon}\n`));
-	} else {
-		preamble.push(encodePktLine("NAK\n"));
-	}
-	yield concatPktLines(...preamble);
+	if (preamble.length > 0) yield concatPktLines(...preamble);
 
 	if (useSideband) {
 		for await (const chunk of packChunks) {
@@ -290,6 +248,40 @@ export async function* buildUploadPackResponseStreaming(
 			yield chunk;
 		}
 	}
+}
+
+/**
+ * A stateless request carries the whole negotiation, so its response
+ * repeats the shallow update and every ACK before the pack.
+ */
+export function buildStatelessUploadPackPreamble(
+	commonHashes?: string[],
+	shallowInfo?: ShallowUpdate,
+): Uint8Array[] {
+	const parts = shallowInfo ? shallowUpdateLines(shallowInfo) : [];
+	if (commonHashes && commonHashes.length > 0) {
+		for (const hash of commonHashes) {
+			parts.push(encodePktLine(`ACK ${hash} common\n`));
+		}
+		const lastCommon = commonHashes[commonHashes.length - 1];
+		parts.push(encodePktLine(`ACK ${lastCommon} ready\n`));
+		parts.push(encodePktLine(`ACK ${lastCommon}\n`));
+	} else {
+		parts.push(encodePktLine("NAK\n"));
+	}
+	return parts;
+}
+
+function shallowUpdateLines(shallowInfo: ShallowUpdate): Uint8Array[] {
+	const parts: Uint8Array[] = [];
+	for (const hash of shallowInfo.shallow) {
+		parts.push(encodePktLine(`shallow ${hash}\n`));
+	}
+	for (const hash of shallowInfo.unshallow) {
+		parts.push(encodePktLine(`unshallow ${hash}\n`));
+	}
+	parts.push(flushPkt());
+	return parts;
 }
 
 // ── Receive-pack request parsing ────────────────────────────────────

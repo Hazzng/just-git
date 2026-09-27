@@ -29,16 +29,19 @@ import {
 	type PushCommand,
 	type V2FetchResponseOptions,
 	type V2LsRefsRef,
+	type UploadPackRequest,
 	buildRefAdvertisement,
 	buildRefListPktLines,
 	buildShallowOnlyResponse,
+	buildStatelessUploadPackPreamble,
 	buildUploadPackResponse,
-	buildUploadPackResponseStreaming,
 	buildV2CapabilityAdvertisement,
 	buildV2FetchAcknowledgments,
 	buildV2FetchResponse,
 	buildV2FetchResponseStreaming,
 	buildV2LsRefsResponse,
+	framePackResponse,
+	framePackResponseStreaming,
 	parseReceivePackRequest,
 	parseUploadPackRequest,
 	parseV2FetchArgs,
@@ -340,92 +343,132 @@ export function buildAuthorizedFetchSet(adv: AdvertiseResult): AuthorizedFetchSe
  *
  * Returns `Uint8Array` for buffered responses (cache hits, deltified packs)
  * or `ReadableStream<Uint8Array>` for streaming no-delta responses.
+ *
+ * Stateless only: `requestBody` must hold the whole request through
+ * `done`. Protocol v0 clients on a stateful connection (e.g. SSH) wait
+ * for replies mid-request, so they cannot be served by this function.
  */
 export async function handleUploadPack(
 	repo: GitRepo,
 	requestBody: Uint8Array,
 	options?: UploadPackOptions & { authorizedFetchSet?: AuthorizedFetchSet },
 ): Promise<Uint8Array | ReadableStream<Uint8Array> | Rejection> {
-	const { wants, haves, capabilities, clientShallows, depth, done } =
-		parseUploadPackRequest(requestBody);
+	const request = parseUploadPackRequest(requestBody);
+	const { wants, haves, capabilities, done } = request;
 
 	if (wants.length === 0) {
 		return buildUploadPackResponse(new Uint8Array(0), false);
 	}
 
-	if (options?.authorizedFetchSet) {
-		for (const want of wants) {
-			if (!options.authorizedFetchSet.allowedWantHashes.has(want)) {
-				return { reject: true, message: `forbidden want ${want}` };
-			}
-		}
-	}
+	const rejection = checkAuthorizedWants(wants, options?.authorizedFetchSet);
+	if (rejection) return rejection;
 
-	const useMultiAck = capabilities.includes("multi_ack_detailed");
-	const useSideband = capabilities.includes("side-band-64k");
-
-	// Compute shallow boundary when client requests a depth limit
-	let shallowInfo: ShallowUpdate | undefined;
-	let shallowBoundary: Set<ObjectId> | undefined;
-	let clientShallowSet: Set<ObjectId> | undefined;
-
-	// Always track client's shallow state — even requests without
-	// "deepen" (e.g. tag auto-follow) need accurate have-walk bounds.
-	if (clientShallows.length > 0) {
-		clientShallowSet = new Set(clientShallows);
-	}
-
-	if (depth !== undefined) {
-		const boundary = await computeShallowBoundary(
-			repo,
-			wants,
-			depth,
-			clientShallowSet ?? new Set(),
-		);
-		shallowInfo = boundary;
-		// Always set shallowBoundary when depth is requested, even for
-		// unshallow (empty set). This signals "deepening mode" to
-		// enumerateObjects so it augments wants with shallow parents.
-		shallowBoundary = new Set(boundary.shallow);
-	}
+	const shallow = await resolveUploadPackShallow(repo, request);
 
 	// Shallow negotiation phase: when the client sends wants + deepen
 	// without "done", it expects only the shallow-update section back.
 	// The client will send a second request with "done" for the pack.
-	if (shallowInfo && !done) {
-		return buildShallowOnlyResponse(shallowInfo);
+	if (shallow.info && !done) {
+		return buildShallowOnlyResponse(shallow.info);
 	}
 
 	let commonHashes: string[] | undefined;
-	if (useMultiAck && haves.length > 0) {
-		const present = repo.objectStore.existsMany
-			? await repo.objectStore.existsMany(haves)
-			: await existingHashes(repo.objectStore, haves);
+	if (capabilities.includes("multi_ack_detailed") && haves.length > 0) {
+		const present = await existingHashes(repo.objectStore, haves);
 		commonHashes = haves.filter((hash) => present.has(hash));
 		if (commonHashes.length === 0) commonHashes = undefined;
 	}
 
+	return buildNegotiatedPackResponse(
+		repo,
+		request,
+		shallow,
+		buildStatelessUploadPackPreamble(commonHashes, shallow.info),
+		options,
+	);
+}
+
+/** Depth-limiting state for one upload-pack request. */
+export interface UploadPackShallow {
+	/** Shallow update to report to the client; set only when it requested a depth. */
+	info?: ShallowUpdate;
+	/**
+	 * New shallow boundary. Always set when a depth is requested, even for
+	 * unshallow (empty set): it signals "deepening mode" so enumeration
+	 * augments wants with shallow parents.
+	 */
+	boundary?: Set<ObjectId>;
+	/**
+	 * The client's existing shallow commits. Tracked even without "deepen"
+	 * (e.g. tag auto-follow) so the have-walk stays bounded.
+	 */
+	clientBoundary?: Set<ObjectId>;
+}
+
+export async function resolveUploadPackShallow(
+	repo: GitRepo,
+	request: UploadPackRequest,
+): Promise<UploadPackShallow> {
+	const clientBoundary =
+		request.clientShallows.length > 0 ? new Set(request.clientShallows) : undefined;
+	if (request.depth === undefined) return { clientBoundary };
+	const info = await computeShallowBoundary(
+		repo,
+		request.wants,
+		request.depth,
+		clientBoundary ?? new Set(),
+	);
+	return { info, boundary: new Set(info.shallow), clientBoundary };
+}
+
+export function checkAuthorizedWants(
+	wants: string[],
+	authorizedFetchSet: AuthorizedFetchSet | undefined,
+): Rejection | null {
+	if (!authorizedFetchSet) return null;
+	for (const want of wants) {
+		if (!authorizedFetchSet.allowedWantHashes.has(want)) {
+			return { reject: true, message: `forbidden want ${want}` };
+		}
+	}
+	return null;
+}
+
+/**
+ * Build the pack for a fully negotiated upload-pack request and frame it
+ * after `preamble`, the negotiation lines the transport still owes the
+ * client (stateless and stateful transports owe different lines).
+ */
+export async function buildNegotiatedPackResponse(
+	repo: GitRepo,
+	request: Pick<UploadPackRequest, "wants" | "haves" | "capabilities">,
+	shallow: UploadPackShallow,
+	preamble: Uint8Array[],
+	options?: UploadPackOptions,
+): Promise<Uint8Array | ReadableStream<Uint8Array>> {
+	const { wants, haves, capabilities } = request;
+	const useSideband = capabilities.includes("side-band-64k");
+
 	// Shallow fetches are never cached (boundary depends on client state)
 	const cacheKey =
-		!shallowBoundary && options?.cache && options.cacheKey
+		!shallow.boundary && options?.cache && options.cacheKey
 			? PackCache.key(options.cacheKey, wants, haves)
 			: null;
 
 	if (cacheKey && options?.cache) {
 		const cached = options.cache.get(cacheKey);
 		if (cached) {
-			return buildUploadPackResponse(cached.packData, useSideband, commonHashes);
+			return framePackResponse(preamble, cached.packData, useSideband);
 		}
 	}
 
-	const includeTag = capabilities.includes("include-tag");
 	const packOpts: PackBuildOptions = {
 		repo,
 		wants,
 		haves,
-		includeTag,
-		shallowBoundary,
-		clientShallowBoundary: clientShallowSet,
+		includeTag: capabilities.includes("include-tag"),
+		shallowBoundary: shallow.boundary,
+		clientShallowBoundary: shallow.clientBoundary,
 		cache: options?.cache,
 		cacheKey,
 		deltaWindow: options?.deltaWindow,
@@ -435,15 +478,13 @@ export async function handleUploadPack(
 		const packChunks = await buildPackStreaming(packOpts);
 		if (!packChunks) {
 			const { data: emptyPack } = await writePackDeltified([]);
-			return buildUploadPackResponse(emptyPack, useSideband, commonHashes, shallowInfo);
+			return framePackResponse(preamble, emptyPack, useSideband);
 		}
-		return asyncIterableToStream(
-			buildUploadPackResponseStreaming(packChunks, useSideband, commonHashes, shallowInfo),
-		);
+		return asyncIterableToStream(framePackResponseStreaming(preamble, packChunks, useSideband));
 	}
 
 	const packData = await buildPackBuffered(packOpts);
-	return buildUploadPackResponse(packData, useSideband, commonHashes, shallowInfo);
+	return framePackResponse(preamble, packData, useSideband);
 }
 
 // ── Shared pack-building pipeline ───────────────────────────────────
@@ -590,10 +631,11 @@ function asyncIterableToStream(iterable: AsyncIterable<Uint8Array>): ReadableStr
 	});
 }
 
-async function existingHashes(
+export async function existingHashes(
 	store: GitRepo["objectStore"],
 	hashes: ReadonlyArray<ObjectId>,
 ): Promise<Set<ObjectId>> {
+	if (store.existsMany) return store.existsMany(hashes as ObjectId[]);
 	const present = new Set<ObjectId>();
 	for (const hash of hashes) {
 		if (await store.exists(hash)) present.add(hash);

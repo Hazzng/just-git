@@ -127,7 +127,7 @@ Added `GitServerConfig.packOptions` with `noDelta` and `deltaWindow` fields.
 When `noDelta: true`, upload-pack skips delta computation entirely and
 returns a `ReadableStream` that pipes objects through a true streaming
 pack writer (`writePackStreaming` in `packfile.ts`) and streaming sideband
-wrapper (`buildUploadPackResponseStreaming` in `protocol.ts`).
+wrapper (`framePackResponseStreaming` in `protocol.ts`).
 
 The streaming path reads object content lazily from the store — only one
 object is in memory at a time from the pack writer's perspective.

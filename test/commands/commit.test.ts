@@ -733,4 +733,23 @@ describe("git commit", () => {
 			expect(results[2].stdout).toContain("relative path message");
 		});
 	});
+
+	describe("--quiet", () => {
+		test("-q and -qm commit without printing the summary", async () => {
+			const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add README.md");
+			const first = await bash.exec('git commit -q -m "first"');
+			expect(first.exitCode).toBe(0);
+			expect(first.stdout).toBe("");
+			expect(first.stderr).toBe("");
+
+			await bash.exec("git add src/main.ts");
+			const second = await bash.exec('git commit -qm "second"');
+			expect(second.exitCode).toBe(0);
+			expect(second.stdout).toBe("");
+			expect(second.stderr).toBe("");
+			expect((await bash.exec("git log --format=%s -2")).stdout).toContain("second\nfirst");
+		});
+	});
 });

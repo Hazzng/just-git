@@ -396,6 +396,7 @@ Options:
   --amend                 Amend the previous commit
   --no-edit               Use the previous commit message without editing
   -a, --all               Auto-stage modified and deleted tracked files
+  -q, --quiet             Suppress commit summary
 ```
 
 ## git config

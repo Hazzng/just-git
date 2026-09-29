@@ -419,13 +419,11 @@ describe("git diff", () => {
 	test("matching index stat skips clean worktree content reads", async () => {
 		const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
 		await bash.exec("git init");
+		// Tracked files must be strictly older than the index `git add` writes;
+		// otherwise their entries are smudged as racily clean and always hashed.
+		await Bun.sleep(2);
 		await bash.exec("git add .");
 		await bash.exec('git commit -m "initial"');
-
-		// Refresh only the index mtime so all tracked-file mtimes are safely older.
-		const indexData = await bash.fs.readFileBuffer("/repo/.git/index");
-		await Bun.sleep(2);
-		await bash.fs.writeFile("/repo/.git/index", indexData);
 
 		const calls = observeFsCalls(bash.fs);
 		const unstaged = await bash.exec("git diff --name-only");

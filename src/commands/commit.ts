@@ -62,6 +62,7 @@ export function registerCommitCommand(parent: Command, ext?: GitExtensions) {
 			amend: f().describe("Amend the previous commit"),
 			noEdit: f().describe("Use the previous commit message without editing"),
 			all: f().alias("a").describe("Auto-stage modified and deleted tracked files"),
+			quiet: f().alias("q").describe("Suppress commit summary"),
 		},
 		handler: async (args, ctx) => {
 			const messages = args.message as string[];
@@ -440,6 +441,7 @@ export function registerCommitCommand(parent: Command, ext?: GitExtensions) {
 				parents,
 				author,
 			});
+			if (args.quiet) return { stdout: "", stderr: "", exitCode: 0 };
 
 			// Format output — for amend, diff against the amended commit's parent
 			const branchRef = head?.type === "symbolic" ? head.target : null;

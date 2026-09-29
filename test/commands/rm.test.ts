@@ -337,4 +337,59 @@ describe("git rm", () => {
 			expect(result.stderr).toContain("did not match any files");
 		});
 	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: BASIC_REPO });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"', { env: TEST_ENV });
+			return bash;
+		}
+
+		test("-q suppresses rm lines but still removes", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git rm -q README.md");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/repo/README.md")).toBe(false);
+			const status = await bash.exec("git status --short");
+			expect(status.stdout).toBe("D  README.md\n");
+		});
+
+		test("--quiet suppresses recursive removal output", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git rm --quiet -r --cached src");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/repo/src/main.ts")).toBe(true);
+		});
+
+		test("-q suppresses dry-run output and removes nothing", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git rm -n -q README.md");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/repo/README.md")).toBe(true);
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git rm -q --no-quiet README.md");
+			expect(result.stdout).toBe("rm 'README.md'\n");
+			expect(result.exitCode).toBe(0);
+		});
+
+		test("errors still print", async () => {
+			const bash = await setup();
+			const missing = await bash.exec("git rm -q nope");
+			expect(missing.stdout).toBe("");
+			expect(missing.stderr).toBe("fatal: pathspec 'nope' did not match any files\n");
+			expect(missing.exitCode).toBe(128);
+
+			await bash.fs.writeFile("/repo/README.md", "changed");
+			const modified = await bash.exec("git rm -q README.md");
+			expect(modified.stderr).toBe(
+				"error: the following file has local modifications:\n    README.md\n(use --cached to keep the file, or -f to force removal)\n",
+			);
+			expect(modified.exitCode).toBe(1);
+		});
+	});
 });

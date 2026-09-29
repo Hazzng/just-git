@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EMPTY_REPO, TEST_ENV_NAMED as TEST_ENV, envAt } from "../fixtures";
-import { createTestBash, readFile } from "../util";
+import { createTestBash, pathExists, readFile } from "../util";
 
 describe("git merge", () => {
 	// ── Error cases ──────────────────────────────────────────────────
@@ -676,6 +676,142 @@ describe("git merge", () => {
 			expect(result.exitCode).toBe(1);
 			const content = await readFile(bash.fs, "/repo/file.txt");
 			expect(content).toContain("|||||||");
+		});
+	});
+
+	describe("--quiet", () => {
+		/**
+		 * main:     init -- M (main.txt)
+		 * ff:       init -- F (ff.txt)          (fast-forwardable from init)
+		 * side:     init -- S (README.md edit)  (clean three-way from M)
+		 * conflict: init -- C (main.txt)        (conflicts with M)
+		 */
+		async function setup() {
+			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			await bash.exec("git checkout -b ff");
+			await bash.fs.writeFile("/repo/ff.txt", "ff");
+			await bash.exec("git add ff.txt");
+			await bash.exec('git commit -m "ff"');
+			await bash.exec("git checkout -b side main");
+			await bash.fs.writeFile("/repo/README.md", "side");
+			await bash.exec('git commit -am "side"');
+			await bash.exec("git checkout -b conflict main");
+			await bash.fs.writeFile("/repo/main.txt", "conflict");
+			await bash.exec("git add main.txt");
+			await bash.exec('git commit -m "conflict"');
+			await bash.exec("git checkout main");
+			return bash;
+		}
+
+		test("-q silences fast-forward and already-up-to-date", async () => {
+			const bash = await setup();
+			const ffHash = (await bash.exec("git rev-parse ff")).stdout;
+			const ff = await bash.exec("git merge -q ff");
+			expect(ff).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await bash.exec("git rev-parse HEAD")).stdout).toBe(ffHash);
+			expect(await readFile(bash.fs, "/repo/ff.txt")).toBe("ff");
+
+			const again = await bash.exec("git merge --quiet ff");
+			expect(again).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git merge -q --no-quiet ff");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toMatch(/^Updating [0-9a-f]+\.\.[0-9a-f]+\nFast-forward\n/);
+		});
+
+		test("-q silences a clean three-way merge", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/main.txt", "main");
+			await bash.exec("git add main.txt");
+			await bash.exec('git commit -m "main"');
+
+			const result = await bash.exec("git merge -q side");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await bash.exec("git log -1 --format=%s")).stdout).toBe("Merge branch 'side'\n");
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("side");
+		});
+
+		test("-q still prints conflicts", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/main.txt", "main");
+			await bash.exec("git add main.txt");
+			await bash.exec('git commit -m "main"');
+
+			const result = await bash.exec("git merge -q conflict");
+			expect(result.exitCode).toBe(1);
+			expect(result.stdout).toBe(
+				"Auto-merging main.txt\n" +
+					"CONFLICT (add/add): Merge conflict in main.txt\n" +
+					"Automatic merge failed; fix conflicts and then commit the result.\n",
+			);
+			expect(await pathExists(bash.fs, "/repo/.git/MERGE_HEAD")).toBe(true);
+		});
+
+		test("-q still prints errors", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/ff.txt", "untracked");
+			const result = await bash.exec("git merge -q ff");
+			expect(result.exitCode).not.toBe(0);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain(
+				"error: The following untracked working tree files would be overwritten by merge:\n\tff.txt\n",
+			);
+
+			const bad = await bash.exec("git merge -q nope");
+			expect(bad.exitCode).toBe(1);
+			expect(bad.stderr).toBe("merge: nope - not something we can merge\n");
+		});
+
+		test("--squash -q keeps the squash notice", async () => {
+			const bash = await setup();
+			const ff = await bash.exec("git merge -q --squash ff");
+			expect(ff).toMatchObject({
+				stdout: "Squash commit -- not updating HEAD\n",
+				stderr: "",
+				exitCode: 0,
+			});
+			await bash.exec("git reset --hard");
+
+			await bash.fs.writeFile("/repo/main.txt", "main");
+			await bash.exec("git add main.txt");
+			await bash.exec('git commit -m "main"');
+			const threeWay = await bash.exec("git merge -q --squash side");
+			expect(threeWay).toMatchObject({
+				stdout: "Squash commit -- not updating HEAD\n",
+				stderr: "Automatic merge went well; stopped before committing as requested\n",
+				exitCode: 0,
+			});
+		});
+
+		test("--abort/--continue reject -q before checking merge state", async () => {
+			const bash = await setup();
+			const noMerge = await bash.exec("git merge --abort -q");
+			expect(noMerge.exitCode).toBe(129);
+			expect(noMerge.stderr).toStartWith(
+				"fatal: --abort expects no arguments\n\nusage: git merge [<options>] [<commit>...]\n",
+			);
+
+			await bash.fs.writeFile("/repo/main.txt", "main");
+			await bash.exec("git add main.txt");
+			await bash.exec('git commit -m "main"');
+			expect((await bash.exec("git merge conflict")).exitCode).toBe(1);
+			const abort = await bash.exec("git merge -q --abort");
+			expect(abort.exitCode).toBe(129);
+			expect(abort.stderr).toStartWith("fatal: --abort expects no arguments\n");
+			const cont = await bash.exec("git merge --continue --quiet");
+			expect(cont.exitCode).toBe(129);
+			expect(cont.stderr).toStartWith("fatal: --continue expects no arguments\n");
+			expect(await pathExists(bash.fs, "/repo/.git/MERGE_HEAD")).toBe(true);
+
+			const unresolved = await bash.exec("git merge --continue");
+			expect(unresolved.exitCode).toBe(128);
+			expect(unresolved.stdout).toBe("U\tmain.txt\n");
 		});
 	});
 });

@@ -404,4 +404,81 @@ describe("git fetch", () => {
 			expect(result.stderr).toContain("does not appear to be a git repository");
 		});
 	});
+
+	describe("--quiet", () => {
+		test("-q suppresses the From header and ref table but updates refs", async () => {
+			const bash = await setupClonePair();
+			await bash.exec(
+				"cd /remote && git checkout -b feature && echo feat > feat.txt && git add . && git commit -m feature",
+			);
+			await bash.exec("cd /remote && git checkout main && git tag v1.0");
+			const remoteFeature = await readFile(bash.fs, "/remote/.git/refs/heads/feature");
+
+			const result = await bash.exec("git fetch -q", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/local/.git/refs/remotes/origin/feature")).toBe(
+				remoteFeature,
+			);
+			expect(await pathExists(bash.fs, "/local/.git/refs/tags/v1.0")).toBe(true);
+		});
+
+		test("--quiet suppresses [deleted] lines from --prune", async () => {
+			const bash = await setupClonePair();
+			await bash.exec(
+				"cd /remote && git checkout -b stale && echo x > x.txt && git add . && git commit -m stale",
+			);
+			await bash.exec("cd /remote && git checkout main");
+			await bash.exec("git fetch", { cwd: "/local" });
+			await bash.exec("cd /remote && git branch -D stale");
+
+			const result = await bash.exec("git fetch --quiet --prune", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/local/.git/refs/remotes/origin/stale")).toBe(false);
+		});
+
+		test("-q drops the rejected tag line but still exits 1", async () => {
+			const bash = await setupClonePair();
+			await bash.exec("cd /local && git tag v1.0");
+			await bash.exec(
+				"cd /remote && echo remote > remote.txt && git add . && git commit -m remote",
+			);
+			await bash.exec("cd /remote && git tag v1.0");
+
+			const localTagBefore = await readFile(bash.fs, "/local/.git/refs/tags/v1.0");
+			const result = await bash.exec("git fetch -q --tags", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 1 });
+			expect(await readFile(bash.fs, "/local/.git/refs/tags/v1.0")).toBe(localTagBefore);
+		});
+
+		test("-q suppresses output for every remote with --all", async () => {
+			const bash = await setupClonePair();
+			await bash.exec("git init --bare /remote2");
+			await bash.exec("git remote add upstream /remote2", { cwd: "/local" });
+			await bash.exec("git push upstream main", { cwd: "/local" });
+			await bash.exec("cd /remote && echo v2 > README.md && git add . && git commit -m update");
+
+			const result = await bash.exec("git fetch -q --all", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("-q still reports errors", async () => {
+			const bash = await setupClonePair();
+			const result = await bash.exec("git fetch -q origin refs/heads/nosuch", { cwd: "/local" });
+			expect(result).toMatchObject({
+				stdout: "",
+				stderr: "fatal: couldn't find remote ref refs/heads/nosuch\n",
+				exitCode: 128,
+			});
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setupClonePair();
+			await bash.exec("cd /remote && echo v2 > README.md && git add . && git commit -m update");
+
+			const result = await bash.exec("git fetch -q --no-quiet", { cwd: "/local" });
+			expect(result.exitCode).toBe(0);
+			expect(result.stderr).toStartWith("From /remote\n");
+			expect(result.stderr).toMatch(/main\s+-> origin\/main/);
+		});
+	});
 });

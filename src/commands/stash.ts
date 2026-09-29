@@ -4,6 +4,7 @@ import {
 	err,
 	fatal,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 } from "../lib/command-utils.ts";
 import { formatDiffStat } from "../lib/commit-summary.ts";
@@ -56,9 +57,11 @@ async function formatTreeDiff(ctx: GitRepo, diff: TreeDiffEntry): Promise<string
 export function registerStashCommand(parent: Command, ext?: GitExtensions) {
 	const stash = parent.command("stash", {
 		description: "Stash the changes in a dirty working directory away",
+		args: [a.string().name("args").variadic().optional()],
 		options: {
 			message: o.string().alias("m").describe("Stash message"),
 			"include-untracked": f().alias("u").describe("Also stash untracked files"),
+			quiet: quietFlag("quiet mode"),
 		},
 		transformArgs: (tokens) => {
 			if (tokens[0] !== "save") return tokens;
@@ -77,7 +80,19 @@ export function registerStashCommand(parent: Command, ext?: GitExtensions) {
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
 			if (isCommandError(gitCtxOrError)) return gitCtxOrError;
-			return handlePush(gitCtxOrError, ctx.env, args.message, args["include-untracked"]);
+			const unexpected = args.args[0];
+			if (unexpected !== undefined) {
+				return fatal(
+					`subcommand wasn't specified; 'push' can't be assumed due to unexpected token '${unexpected}'`,
+				);
+			}
+			return handlePush(
+				gitCtxOrError,
+				ctx.env,
+				args.message,
+				args["include-untracked"],
+				args.quiet,
+			);
 		},
 	});
 
@@ -86,31 +101,44 @@ export function registerStashCommand(parent: Command, ext?: GitExtensions) {
 		options: {
 			message: o.string().alias("m").describe("Stash message"),
 			"include-untracked": f().alias("u").describe("Also stash untracked files"),
+			quiet: quietFlag("quiet mode"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
 			if (isCommandError(gitCtxOrError)) return gitCtxOrError;
-			return handlePush(gitCtxOrError, ctx.env, args.message, args["include-untracked"]);
+			return handlePush(
+				gitCtxOrError,
+				ctx.env,
+				args.message,
+				args["include-untracked"],
+				args.quiet,
+			);
 		},
 	});
 
 	stash.command("pop", {
 		description: "Remove a single stash entry and apply it on top of the current working tree",
 		args: [a.string().name("stash").describe("Stash reference (e.g. stash@{0})").optional()],
+		options: {
+			quiet: quietFlag("be quiet, only report errors"),
+		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
 			if (isCommandError(gitCtxOrError)) return gitCtxOrError;
-			return handlePop(gitCtxOrError, args.stash);
+			return handlePop(gitCtxOrError, args.stash, args.quiet);
 		},
 	});
 
 	stash.command("apply", {
 		description: "Apply a stash entry on top of the current working tree",
 		args: [a.string().name("stash").describe("Stash reference (e.g. stash@{0})").optional()],
+		options: {
+			quiet: quietFlag("be quiet, only report errors"),
+		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
 			if (isCommandError(gitCtxOrError)) return gitCtxOrError;
-			return handleApply(gitCtxOrError, args.stash);
+			return handleApply(gitCtxOrError, args.stash, args.quiet);
 		},
 	});
 
@@ -126,10 +154,13 @@ export function registerStashCommand(parent: Command, ext?: GitExtensions) {
 	stash.command("drop", {
 		description: "Remove a single stash entry from the list of stash entries",
 		args: [a.string().name("stash").describe("Stash reference (e.g. stash@{0})").optional()],
+		options: {
+			quiet: quietFlag("be quiet, only report errors"),
+		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
 			if (isCommandError(gitCtxOrError)) return gitCtxOrError;
-			return handleDrop(gitCtxOrError, args.stash);
+			return handleDrop(gitCtxOrError, args.stash, args.quiet);
 		},
 	});
 
@@ -163,6 +194,7 @@ async function handlePush(
 	env: Map<string, string>,
 	message: string | undefined,
 	includeUntracked?: boolean,
+	quiet?: boolean,
 ): Promise<CommandResult> {
 	const headHash = await resolveHead(gitCtx);
 	if (!headHash) {
@@ -186,6 +218,10 @@ async function handlePush(
 		return fatal((e as Error).message);
 	}
 
+	if (quiet) {
+		return { stdout: "", stderr: "", exitCode: 0 };
+	}
+
 	if (!stashHash) {
 		return {
 			stdout: "No local changes to save\n",
@@ -204,7 +240,11 @@ async function handlePush(
 	};
 }
 
-async function handlePop(gitCtx: GitContext, refArg: string | undefined): Promise<CommandResult> {
+async function handlePop(
+	gitCtx: GitContext,
+	refArg: string | undefined,
+	quiet?: boolean,
+): Promise<CommandResult> {
 	const stashIndex = parseStashArg(refArg);
 	if (stashIndex < 0) {
 		return err(`error: '${refArg}' is not a valid stash reference`);
@@ -215,7 +255,7 @@ async function handlePop(gitCtx: GitContext, refArg: string | undefined): Promis
 		return err(`error: stash@{${stashIndex}} is not a valid reference`);
 	}
 
-	const result = await applyStash(gitCtx, stashIndex);
+	const result = await applyStash(gitCtx, stashIndex, { quiet });
 	if (!result.ok) {
 		const mergeOutput = result.messages?.length ? `${result.messages.join("\n")}\n` : "";
 		if (result.stdout) {
@@ -225,7 +265,7 @@ async function handlePop(gitCtx: GitContext, refArg: string | undefined): Promis
 				exitCode: result.exitCode,
 			};
 		}
-		const statusOutput = await generateLongFormStatus(gitCtx);
+		const statusOutput = quiet ? "" : await generateLongFormStatus(gitCtx);
 		return {
 			stdout: `${mergeOutput}${statusOutput}The stash entry is kept in case you need it again.\n`,
 			stderr: result.stderr,
@@ -233,9 +273,10 @@ async function handlePop(gitCtx: GitContext, refArg: string | undefined): Promis
 		};
 	}
 
+	// "The stash entry is kept" still prints under -q.
 	if (result.hasConflicts) {
 		const mergeOutput = result.messages.length > 0 ? `${result.messages.join("\n")}\n` : "";
-		const statusOutput = await generateLongFormStatus(gitCtx);
+		const statusOutput = quiet ? "" : await generateLongFormStatus(gitCtx);
 		return {
 			stdout: `${mergeOutput}${statusOutput}The stash entry is kept in case you need it again.\n`,
 			stderr: "",
@@ -249,6 +290,9 @@ async function handlePop(gitCtx: GitContext, refArg: string | undefined): Promis
 	}
 
 	const mergeOutput = result.messages.length > 0 ? `${result.messages.join("\n")}\n` : "";
+	if (quiet) {
+		return { stdout: mergeOutput, stderr: "", exitCode: 0 };
+	}
 	const refLabel = refArg ? `stash@{${stashIndex}}` : `refs/stash@{${stashIndex}}`;
 	const statusOutput = await generateLongFormStatus(gitCtx);
 	return {
@@ -258,17 +302,21 @@ async function handlePop(gitCtx: GitContext, refArg: string | undefined): Promis
 	};
 }
 
-async function handleApply(gitCtx: GitContext, refArg: string | undefined): Promise<CommandResult> {
+async function handleApply(
+	gitCtx: GitContext,
+	refArg: string | undefined,
+	quiet?: boolean,
+): Promise<CommandResult> {
 	const stashIndex = parseStashArg(refArg);
 	if (stashIndex < 0) {
 		return err(`error: '${refArg}' is not a valid stash reference`);
 	}
 
-	const result = await applyStash(gitCtx, stashIndex);
+	const result = await applyStash(gitCtx, stashIndex, { quiet });
 	if (!result.ok) {
 		const mergeOutput = result.messages?.length ? `${result.messages.join("\n")}\n` : "";
 		let stdout = result.stdout;
-		if (!stdout) {
+		if (!stdout && !quiet) {
 			stdout = await generateLongFormStatus(gitCtx);
 		}
 		return {
@@ -279,7 +327,7 @@ async function handleApply(gitCtx: GitContext, refArg: string | undefined): Prom
 	}
 
 	const mergeOutput = result.messages.length > 0 ? `${result.messages.join("\n")}\n` : "";
-	const statusOutput = await generateLongFormStatus(gitCtx);
+	const statusOutput = quiet ? "" : await generateLongFormStatus(gitCtx);
 	const exitCode = result.hasConflicts ? 1 : 0;
 	return { stdout: `${mergeOutput}${statusOutput}`, stderr: "", exitCode };
 }
@@ -298,7 +346,11 @@ async function handleList(gitCtx: GitContext): Promise<CommandResult> {
 	};
 }
 
-async function handleDrop(gitCtx: GitContext, refArg: string | undefined): Promise<CommandResult> {
+async function handleDrop(
+	gitCtx: GitContext,
+	refArg: string | undefined,
+	quiet?: boolean,
+): Promise<CommandResult> {
 	const stashIndex = parseStashArg(refArg);
 	if (stashIndex < 0) {
 		return err(`error: '${refArg}' is not a valid stash reference`);
@@ -312,6 +364,10 @@ async function handleDrop(gitCtx: GitContext, refArg: string | undefined): Promi
 	const dropErr = await dropStash(gitCtx, stashIndex);
 	if (dropErr) {
 		return err(dropErr);
+	}
+
+	if (quiet) {
+		return { stdout: "", stderr: "", exitCode: 0 };
 	}
 
 	const refLabel = refArg ? `stash@{${stashIndex}}` : `refs/stash@{${stashIndex}}`;

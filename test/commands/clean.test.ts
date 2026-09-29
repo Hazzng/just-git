@@ -385,4 +385,46 @@ describe("git clean", () => {
 			expect(results[0].stderr).toContain("not a git repository");
 		});
 	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: BASIC_REPO });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"', { env: TEST_ENV });
+			await bash.fs.writeFile("/repo/untracked.txt", "junk");
+			await bash.fs.writeFile("/repo/tmpdir/file.txt", "junk");
+			return bash;
+		}
+
+		test("-q suppresses Removing lines but still removes", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git clean -q -f -d");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/repo/untracked.txt")).toBe(false);
+			expect(await pathExists(bash.fs, "/repo/tmpdir")).toBe(false);
+			expect(await pathExists(bash.fs, "/repo/README.md")).toBe(true);
+		});
+
+		test("--quiet suppresses dry-run output", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git clean -n --quiet -d");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/repo/untracked.txt")).toBe(true);
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git clean -q --no-quiet -n -d");
+			expect(result.stdout).toBe("Would remove tmpdir/\nWould remove untracked.txt\n");
+		});
+
+		test("still refuses without -f", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git clean -q");
+			expect(result.exitCode).toBe(128);
+			expect(result.stderr).toContain("refusing to clean");
+			expect(await pathExists(bash.fs, "/repo/untracked.txt")).toBe(true);
+		});
+	});
 });

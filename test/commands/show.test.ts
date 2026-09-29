@@ -396,6 +396,88 @@ describe("git show", () => {
 			expect(show.stdout).toContain("diff --git a/src/util.ts b/src/util.ts");
 		});
 	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			return bash;
+		}
+
+		test("-q suppresses the default patch", async () => {
+			const bash = await setup();
+			const quiet = await bash.exec("git show -q");
+			const noPatch = await bash.exec("git show --no-patch");
+			expect(quiet.exitCode).toBe(0);
+			expect(quiet.stdout).toBe(noPatch.stdout);
+			expect(quiet.stdout).not.toContain("diff --git");
+			expect(quiet.stdout).toEndWith("    initial\n");
+		});
+
+		test("--quiet with a custom format prints only the format", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git show --quiet --format=%s");
+			expect(result).toMatchObject({ stdout: "initial\n", stderr: "", exitCode: 0 });
+		});
+
+		test("--no-quiet after -q restores the patch", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git show -q --no-quiet");
+			const plain = await bash.exec("git show");
+			expect(result.stdout).toBe(plain.stdout);
+			expect(result.stdout).toContain("diff --git");
+		});
+
+		test("explicit diff formats still print", async () => {
+			const bash = await setup();
+			for (const opts of ["-p", "--stat", "--numstat", "--shortstat"]) {
+				const quiet = await bash.exec(`git show -q ${opts}`);
+				const plain = await bash.exec(`git show ${opts}`);
+				expect(quiet.stdout).toBe(plain.stdout);
+			}
+			const patchFirst = await bash.exec("git show -p -q");
+			expect(patchFirst.stdout).toContain("diff --git");
+		});
+
+		test("conflicts with --name-only and --name-status", async () => {
+			const bash = await setup();
+			for (const cmd of [
+				"git show -q --name-only",
+				"git show --name-status --quiet",
+				"git show -q --name-only HEAD:README.md",
+			]) {
+				const result = await bash.exec(cmd);
+				expect(result).toMatchObject({
+					stdout: "",
+					stderr:
+						"fatal: options '--name-only', '--name-status', '--check', and '-s' cannot be used together\n",
+					exitCode: 128,
+				});
+			}
+		});
+
+		test("revision errors take precedence over the conflict", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git show -q --name-only HEAD:nope");
+			expect(result.stderr).toBe("fatal: path 'nope' does not exist in 'HEAD'\n");
+			expect(result.exitCode).toBe(128);
+		});
+
+		test("blobs and annotated tags", async () => {
+			const bash = await setup();
+			const blob = await bash.exec("git show -q HEAD:README.md");
+			expect(blob.stdout).toBe("# My Project");
+
+			await bash.exec("git tag -a v1 -m release");
+			const tag = await bash.exec("git show -q v1");
+			expect(tag.exitCode).toBe(0);
+			expect(tag.stdout).toStartWith("tag v1\n");
+			expect(tag.stdout).toEndWith("    initial\n");
+			expect(tag.stdout).not.toContain("diff --git");
+		});
+	});
 });
 
 // ── Helpers ─────────────────────────────────────────────────────────

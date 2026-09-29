@@ -35,6 +35,8 @@ export interface RebaseState {
 	end: number;
 	/** Reflog action prefix for this rebase flow. */
 	reflogAction?: "rebase" | "pull";
+	/** Started with `-q`; persisted so `--continue`/`--skip` stay quiet. */
+	quiet?: boolean;
 }
 
 // ── Paths ───────────────────────────────────────────────────────────
@@ -76,6 +78,7 @@ export async function readRebaseState(gitCtx: GitContext): Promise<RebaseState |
 	const reflogAction = (await gitCtx.fs.exists(join(dir, "reflog-action")))
 		? ((await gitCtx.fs.readFile(join(dir, "reflog-action"))).trim() as "rebase" | "pull")
 		: "rebase";
+	const quiet = await gitCtx.fs.exists(join(dir, "quiet"));
 
 	return {
 		headName: headName.trim(),
@@ -86,6 +89,7 @@ export async function readRebaseState(gitCtx: GitContext): Promise<RebaseState |
 		msgnum,
 		end,
 		reflogAction,
+		...(quiet ? { quiet } : {}),
 	};
 }
 
@@ -105,6 +109,7 @@ export async function writeRebaseState(gitCtx: GitContext, state: RebaseState): 
 	await gitCtx.fs.writeFile(join(dir, "git-rebase-todo"), formatTodoList(state.todo));
 	await gitCtx.fs.writeFile(join(dir, "done"), formatTodoList(state.done));
 	await gitCtx.fs.writeFile(join(dir, "interactive"), "");
+	if (state.quiet) await gitCtx.fs.writeFile(join(dir, "quiet"), "");
 }
 
 /**

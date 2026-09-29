@@ -243,4 +243,47 @@ describe("git init", () => {
 			expect(result.stderr).toBe("");
 		});
 	});
+
+	describe("--quiet", () => {
+		test("-q suppresses the initialization message", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO });
+			const result = await bash.exec("git init -q");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await isFile(bash.fs, "/repo/.git/HEAD")).toBe(true);
+		});
+
+		test("--quiet suppresses the bare initialization message", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO });
+			const result = await bash.exec("git init --bare --quiet");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await isFile(bash.fs, "/repo/HEAD")).toBe(true);
+		});
+
+		test("-q suppresses the reinitialization message", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO });
+			await bash.exec("git init");
+			const result = await bash.exec("git init -q");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("-q keeps the re-init --initial-branch warning", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO });
+			await bash.exec("git init -b main");
+			const result = await bash.exec("git init -q -b foo");
+			expect(result).toMatchObject({
+				stdout: "",
+				stderr: "warning: re-init: ignored --initial-branch=foo\n",
+				exitCode: 0,
+			});
+			const head = await readFile(bash.fs, "/repo/.git/HEAD");
+			expect(head?.trim()).toBe("ref: refs/heads/main");
+		});
+
+		test("--no-quiet after -q restores the message", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO });
+			const result = await bash.exec("git init -q --no-quiet");
+			expect(result.stdout).toBe("Initialized empty Git repository in /repo/.git/\n");
+			expect(result.exitCode).toBe(0);
+		});
+	});
 });

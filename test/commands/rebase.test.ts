@@ -927,4 +927,129 @@ describe("git rebase", () => {
 			expect(await readRebaseState(gitCtx!)).not.toBeNull();
 		});
 	});
+
+	describe("--quiet", () => {
+		test("-q silences a successful rebase", async () => {
+			const bash = await setupDivergent();
+			const result = await bash.exec("git rebase -q main");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await bash.exec("git log --format=%s")).stdout).toBe(
+				"add b.txt on feature\nadd a.txt on main\ninitial\n",
+			);
+			expect((await bash.exec("git branch --show-current")).stdout).toBe("feature\n");
+		});
+
+		test("--quiet silences up-to-date; --no-quiet restores it", async () => {
+			const bash = await setupDivergent();
+			await bash.exec("git rebase main");
+			const quiet = await bash.exec("git rebase --quiet main");
+			expect(quiet).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			const loud = await bash.exec("git rebase -q --no-quiet main");
+			expect(loud).toMatchObject({
+				stdout: "Current branch feature is up to date.\n",
+				stderr: "",
+				exitCode: 0,
+			});
+		});
+
+		test("-q silences a fast-forward rebase", async () => {
+			const bash = await setupDivergent();
+			await bash.exec("git checkout -b behind main~1");
+			const result = await bash.exec("git rebase -q main");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await bash.exec("git rev-parse HEAD")).stdout).toBe(
+				(await bash.exec("git rev-parse main")).stdout,
+			);
+		});
+
+		test("-q drops skipped-commit warnings but keeps the advice", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO, env: envAt("100") });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			await bash.exec("git checkout -b feature");
+			await bash.fs.writeFile("/repo/feat.txt", "feature work");
+			await bash.exec("git add feat.txt");
+			await bash.exec('git commit -m "feature work"', { env: envAt("200") });
+			await bash.exec("git checkout main");
+			await bash.exec("git cherry-pick feature", { env: envAt("300") });
+			await bash.fs.writeFile("/repo/extra.txt", "extra");
+			await bash.exec("git add extra.txt");
+			await bash.exec('git commit -m "extra on main"');
+			await bash.exec("git checkout feature");
+
+			const result = await bash.exec("git rebase -q main");
+			expect(result).toMatchObject({
+				stdout: "",
+				stderr:
+					"hint: use --reapply-cherry-picks to include skipped commits\n" +
+					'hint: Disable this message with "git config set advice.skippedCherryPicks false"\n',
+				exitCode: 0,
+			});
+		});
+
+		test("-q still prints conflicts and persists quiet for --continue", async () => {
+			const bash = await setupConflict();
+			const result = await bash.exec("git rebase -q main");
+			expect(result.exitCode).toBe(1);
+			expect(result.stdout).toContain("CONFLICT (add/add): Merge conflict in file.txt");
+			expect(result.stderr).toMatch(/^error: could not apply [0-9a-f]+\.\.\. feature change\n/);
+			expect(result.stderr).toContain("hint: Resolve all conflicts manually");
+			expect(result.stderr).not.toContain("Rebasing (");
+			expect(await pathExists(bash.fs, "/repo/.git/rebase-merge/quiet")).toBe(true);
+
+			await bash.fs.writeFile("/repo/file.txt", "resolved");
+			await bash.exec("git add file.txt");
+			const cont = await bash.exec("git rebase --continue");
+			expect(cont.exitCode).toBe(0);
+			expect(cont.stdout).toMatch(/^\[detached HEAD [0-9a-f]+\] feature change\n/);
+			expect(cont.stderr).toBe("");
+			expect((await bash.exec("git branch --show-current")).stdout).toBe("feature\n");
+			expect(await isRebaseInProgress((await findRepo(bash.fs, "/repo"))!)).toBe(false);
+		});
+
+		test("--skip in a quiet rebase is silent", async () => {
+			const bash = await setupConflict();
+			await bash.exec("git rebase -q main");
+			const result = await bash.exec("git rebase --skip");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await bash.exec("git rev-parse HEAD")).stdout).toBe(
+				(await bash.exec("git rev-parse main")).stdout,
+			);
+		});
+
+		test("without -q no quiet state file is written", async () => {
+			const bash = await setupConflict();
+			await bash.exec("git rebase main");
+			expect(await pathExists(bash.fs, "/repo/.git/rebase-merge/quiet")).toBe(false);
+		});
+
+		test("--continue/--skip/--abort reject -q with usage and leave the rebase alone", async () => {
+			const bash = await setupConflict();
+			await bash.exec("git rebase main");
+			await bash.fs.writeFile("/repo/file.txt", "resolved");
+			await bash.exec("git add file.txt");
+
+			for (const cmd of [
+				"git rebase --continue -q",
+				"git rebase --quiet --skip",
+				"git rebase --abort -q",
+			]) {
+				const result = await bash.exec(cmd);
+				expect(result.exitCode).toBe(129);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toStartWith("usage: git rebase ");
+			}
+			expect(await isRebaseInProgress((await findRepo(bash.fs, "/repo"))!)).toBe(true);
+			expect(await pathExists(bash.fs, "/repo/.git/rebase-merge/quiet")).toBe(false);
+		});
+
+		test("combining two rebase actions is a usage error", async () => {
+			const bash = await setupConflict();
+			await bash.exec("git rebase main");
+			const result = await bash.exec("git rebase --continue --skip");
+			expect(result.exitCode).toBe(129);
+			expect(result.stderr).toStartWith("usage: git rebase ");
+		});
+	});
 });

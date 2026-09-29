@@ -1,5 +1,5 @@
 import type { GitExtensions } from "../git.ts";
-import { isCommandError, requireGitContext } from "../lib/command-utils.ts";
+import { isCommandError, quietFlag, requireGitContext } from "../lib/command-utils.ts";
 import { type GitConfig, readConfig } from "../lib/config.ts";
 import { collectAllRoots } from "../lib/gc-roots.ts";
 import { clearDetachPoint } from "../lib/operation-state.ts";
@@ -16,6 +16,7 @@ export function registerGcCommand(parent: Command, ext?: GitExtensions) {
 		description: "Cleanup unnecessary files and optimize the local repository",
 		options: {
 			aggressive: f().describe("More aggressively optimize the repository"),
+			quiet: quietFlag("suppress progress reporting"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -50,7 +51,7 @@ export function registerGcCommand(parent: Command, ext?: GitExtensions) {
 					all: true,
 				});
 
-				if (result) {
+				if (result && !args.quiet) {
 					const stderr = formatRepackStderr(result.totalCount, result.deltaCount, true);
 					return { stdout: "", stderr: `${stderr}\n`, exitCode: 0 };
 				}

@@ -6,6 +6,7 @@ import {
 	fatal,
 	formatTransferRefLines,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 	type TransferRefLine,
 } from "../lib/command-utils.ts";
@@ -48,6 +49,7 @@ export function registerFetchCommand(parent: Command, ext?: GitExtensions) {
 			tags: f().describe("Also fetch tags"),
 			depth: o.number().describe("Limit fetching to the specified number of commits"),
 			unshallow: f().describe("Convert a shallow repository to a complete one"),
+			quiet: quietFlag("be more quiet"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -83,6 +85,7 @@ export function registerFetchCommand(parent: Command, ext?: GitExtensions) {
 						ctx.env,
 						ext,
 						depth,
+						args.quiet,
 					);
 					if (result.stderr) allStderr.push(result.stderr);
 					if (result.exitCode !== 0) lastExit = result.exitCode;
@@ -100,6 +103,7 @@ export function registerFetchCommand(parent: Command, ext?: GitExtensions) {
 				ctx.env,
 				ext,
 				depth,
+				args.quiet,
 			);
 		},
 	});
@@ -196,6 +200,7 @@ async function applyFetchRefUpdates(
 	refUpdates: FetchRefUpdate[],
 	ident: Awaited<ReturnType<typeof getReflogIdentity>>,
 	tags: boolean,
+	quiet: boolean,
 ): Promise<{
 	refLines: TransferRefLine[];
 	hadTagRejection: boolean;
@@ -246,6 +251,8 @@ async function applyFetchRefUpdates(
 		});
 	}
 
+	if (quiet) return { refLines, hadTagRejection, appliedUpdates };
+
 	const abbrevRef = await buildAbbrevResolver(
 		gitCtx,
 		appliedUpdates.flatMap((u) => (u.oldHash ? [u.oldHash, u.remote.hash] : [u.remote.hash])),
@@ -274,6 +281,7 @@ async function fetchOneRemote(
 	env: Map<string, string>,
 	ext?: GitExtensions,
 	depth?: number,
+	quiet = false,
 ): Promise<ExecResult> {
 	const resolved = await resolveRemoteTransportOrError(gitCtx, remoteName, env);
 	if (isCommandError(resolved)) return resolved;
@@ -366,22 +374,22 @@ async function fetchOneRemote(
 		refUpdates,
 		ident,
 		tags,
+		quiet,
 	);
 
-	if (isAnonymousDefault && remoteRefs.some((r) => r.name === "HEAD")) {
+	if (!quiet && isAnonymousDefault && remoteRefs.some((r) => r.name === "HEAD")) {
 		refLines.push({ prefix: " * branch", from: "HEAD", to: "FETCH_HEAD" });
 	}
 
 	if (!tags) {
-		refLines.push(
-			...(await autoFollowReachableTags({
-				gitCtx,
-				transport,
-				remoteRefs,
-				ident,
-				reflogAction: "fetch",
-			})),
-		);
+		const tagLines = await autoFollowReachableTags({
+			gitCtx,
+			transport,
+			remoteRefs,
+			ident,
+			reflogAction: "fetch",
+		});
+		if (!quiet) refLines.push(...tagLines);
 	}
 
 	if (prune) {
@@ -400,11 +408,13 @@ async function fetchOneRemote(
 			if (branchName === "HEAD") continue;
 			if (!remoteHeads.has(branchName)) {
 				await deleteRef(gitCtx, ref.name);
-				refLines.push({
-					prefix: " - [deleted]",
-					from: "(none)",
-					to: `${remoteName}/${branchName}`,
-				});
+				if (!quiet) {
+					refLines.push({
+						prefix: " - [deleted]",
+						from: "(none)",
+						to: `${remoteName}/${branchName}`,
+					});
+				}
 			}
 		}
 	}

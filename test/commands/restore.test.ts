@@ -275,4 +275,53 @@ describe("git restore", () => {
 			expect(result.stderr).toContain("cannot specify both --source and --ours/--theirs");
 		});
 	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "init"');
+			return bash;
+		}
+
+		test("-q and --quiet restore silently", async () => {
+			const bash = await setup();
+
+			await bash.fs.writeFile("/repo/README.md", "modified!");
+			const q = await bash.exec("git restore -q README.md");
+			expect(q).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("# My Project");
+
+			await bash.fs.writeFile("/repo/README.md", "staged!");
+			await bash.exec("git add README.md");
+			const quiet = await bash.exec("git restore --quiet --staged --worktree README.md");
+			expect(quiet).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("# My Project");
+			const status = await bash.exec("git status --porcelain");
+			expect(status.stdout).toBe("");
+		});
+
+		test("--no-quiet after -q is accepted", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/README.md", "modified!");
+			const result = await bash.exec("git restore -q --no-quiet --source HEAD README.md");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("# My Project");
+		});
+
+		test("errors still print", async () => {
+			const bash = await setup();
+
+			const missing = await bash.exec("git restore -q nope");
+			expect(missing.exitCode).toBe(1);
+			expect(missing.stderr).toBe(
+				"error: pathspec 'nope' did not match any file(s) known to git\n",
+			);
+
+			const noPaths = await bash.exec("git restore -q");
+			expect(noPaths.exitCode).toBe(128);
+			expect(noPaths.stderr).toBe("fatal: you must specify path(s) to restore\n");
+		});
+	});
 });

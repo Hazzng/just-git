@@ -6,6 +6,7 @@ import {
 	firstLine,
 	getCwdPrefix,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 	requireWorkTree,
 	uniqueAbbrev,
@@ -20,6 +21,7 @@ import {
 	removeEntry,
 	writeIndex,
 } from "../lib/index.ts";
+import { formatUnmergedList } from "../lib/checkout-utils.ts";
 import { peelToCommit, readCommit } from "../lib/object-db.ts";
 import { clearAllOperationState } from "../lib/operation-state.ts";
 import { join } from "../lib/path.ts";
@@ -41,6 +43,7 @@ export function registerResetCommand(parent: Command, ext?: GitExtensions) {
 			soft: f().describe("Only move HEAD"),
 			mixed: f().describe("Move HEAD and reset index (default)"),
 			hard: f().describe("Move HEAD, reset index, and reset working tree"),
+			quiet: quietFlag("be quiet, only report errors"),
 		},
 		handler: async (args, ctx, meta) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -48,6 +51,7 @@ export function registerResetCommand(parent: Command, ext?: GitExtensions) {
 			const gitCtx = gitCtxOrError;
 
 			const positional = args.args;
+			const quiet = !!args.quiet;
 
 			// Validate mutually exclusive flags
 			const flagCount = [args.soft, args.mixed, args.hard].filter(Boolean).length;
@@ -63,7 +67,7 @@ export function registerResetCommand(parent: Command, ext?: GitExtensions) {
 			// `git reset <commit> -- <paths>` or `git reset -- <paths>`
 			if (meta.passthrough.length > 0) {
 				const commitRef = positional.length > 0 ? positional[0] : undefined;
-				return resetPaths(gitCtx, meta.passthrough, cwdPrefix, commitRef, ext);
+				return resetPaths(gitCtx, meta.passthrough, cwdPrefix, commitRef, ext, quiet);
 			}
 
 			// ── Path-based reset (unstage) ──────────────────────────────
@@ -78,24 +82,24 @@ export function registerResetCommand(parent: Command, ext?: GitExtensions) {
 				// If only one arg and it resolves as a revision, it's
 				// `git reset <commit>` with default --mixed mode
 				if (positional.length === 1 && firstIsRevision) {
-					return resetToCommit(gitCtx, firstArg, "mixed", ctx.env, ext);
+					return resetToCommit(gitCtx, firstArg, "mixed", ctx.env, ext, quiet);
 				}
 
 				// All args are paths to unstage
 				if (!firstIsRevision) {
-					return resetPaths(gitCtx, positional, cwdPrefix, undefined, ext);
+					return resetPaths(gitCtx, positional, cwdPrefix, undefined, ext, quiet);
 				}
 
 				// First arg is a revision, rest are paths
 				// `git reset <commit> <paths>` — unstage paths using commit's tree
-				return resetPaths(gitCtx, positional.slice(1), cwdPrefix, firstArg, ext);
+				return resetPaths(gitCtx, positional.slice(1), cwdPrefix, firstArg, ext, quiet);
 			}
 
 			// ── Commit-based reset (with mode flag) ─────────────────────
 			const mode = args.soft ? "soft" : args.hard ? "hard" : "mixed";
 			const commitRef = positional.length > 0 ? positional[0]! : "HEAD";
 
-			return resetToCommit(gitCtx, commitRef, mode, ctx.env, ext);
+			return resetToCommit(gitCtx, commitRef, mode, ctx.env, ext, quiet);
 		},
 	});
 }
@@ -112,6 +116,7 @@ async function resetPaths(
 	cwdPrefix: string,
 	commitRef?: string,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const preResetRej = await ext?.hooks?.preReset?.({
 		repo: gitCtx,
@@ -196,7 +201,8 @@ async function resetPaths(
 	await writeIndex(gitCtx, index);
 
 	const response = {
-		stdout: await formatUnstagedAfterReset(gitCtx, index),
+		// Quiet refresh still reports unmerged entries, in the non-porcelain format.
+		stdout: quiet ? formatUnmergedList(index) : await formatUnstagedAfterReset(gitCtx, index),
 		stderr: "",
 		exitCode: 0,
 	};
@@ -262,6 +268,7 @@ async function resetToCommit(
 	mode: "soft" | "mixed" | "hard",
 	env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const preResetRej = await ext?.hooks?.preReset?.({
 		repo: gitCtx,
@@ -327,7 +334,7 @@ async function resetToCommit(
 		);
 		await writeIndex(gitCtx, index);
 
-		const resetOutput = await formatUnstagedAfterReset(gitCtx, index);
+		const resetOutput = quiet ? "" : await formatUnstagedAfterReset(gitCtx, index);
 		if (resetOutput) {
 			await ext?.hooks?.postReset?.({
 				repo: gitCtx,
@@ -351,7 +358,7 @@ async function resetToCommit(
 	}
 
 	const stdout =
-		mode === "hard"
+		mode === "hard" && !quiet
 			? `HEAD is now at ${await uniqueAbbrev(gitCtx, targetHash)} ${firstLine(targetCommit.message)}\n`
 			: "";
 	await ext?.hooks?.postReset?.({

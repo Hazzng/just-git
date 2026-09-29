@@ -5,6 +5,7 @@ import {
 	fatal,
 	formatTransferRefLines,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 	uniqueAbbrev,
 	type TransferRefLine,
@@ -40,6 +41,7 @@ export function registerPushCommand(parent: Command, ext?: GitExtensions) {
 			all: f().describe("Push all branches"),
 			delete: f().alias("d").describe("Delete remote refs"),
 			tags: f().describe("Push all tags"),
+			quiet: quietFlag("be more quiet"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -48,6 +50,7 @@ export function registerPushCommand(parent: Command, ext?: GitExtensions) {
 
 			const remoteName = args.remote || "origin";
 			const rawRefspecs = args.refspec;
+			const quiet = !!args.quiet;
 
 			let resolved;
 			try {
@@ -257,12 +260,14 @@ export function registerPushCommand(parent: Command, ext?: GitExtensions) {
 							merge: `refs/heads/${branchName}`,
 						};
 						await writeConfig(gitCtx, cfg);
-						stdout = `branch '${branchName}' set up to track '${remoteName}/${branchName}'.\n`;
+						if (!quiet) {
+							stdout = `branch '${branchName}' set up to track '${remoteName}/${branchName}'.\n`;
+						}
 					}
 				}
 				return {
 					stdout,
-					stderr: "Everything up-to-date\n",
+					stderr: quiet ? "" : "Everything up-to-date\n",
 					exitCode: 0,
 				};
 			}
@@ -288,78 +293,20 @@ export function registerPushCommand(parent: Command, ext?: GitExtensions) {
 
 			// Execute the push
 			const result = await transport.push(effectiveUpdates);
-
-			// Pre-compute ancestry for force-requested refs (parallel)
-			const forceCandidates = result.updates.filter(
-				(u) => u.ok && u.oldHash && u.newHash !== ZERO_HASH && forceRequested.has(u.name),
-			);
-			const ancestryResults = await Promise.all(
-				forceCandidates.map((u) => isAncestor(gitCtx, u.oldHash!, u.newHash)),
-			);
-			const actuallyForced = new Set<string>();
-			forceCandidates.forEach((u, i) => {
-				if (!ancestryResults[i]) actuallyForced.add(u.name);
-			});
-
-			// Build output
-			const pushLines: TransferRefLine[] = [];
-			let hasError = false;
-			let hasTagExists = false;
-
-			for (const update of result.updates) {
-				const isTag = update.name.startsWith("refs/tags/");
-				const shortRef = shortenRef(update.name);
-
-				if (!update.ok) {
-					const isFetchFirst = update.error?.includes("fetch first");
-					const isNonFF = update.error?.includes("non-fast-forward");
-					if (isTag && isNonFF) hasTagExists = true;
-					const reason = isFetchFirst
-						? "fetch first"
-						: isTag && isNonFF
-							? "already exists"
-							: isNonFF
-								? "non-fast-forward"
-								: (update.error ?? "failed");
-					pushLines.push({
-						prefix: " ! [rejected]",
-						from: shortRef,
-						to: shortRef,
-						suffix: `(${reason})`,
-					});
-					hasError = true;
-				} else if (!update.oldHash) {
-					const label = isTag ? "[new tag]" : "[new branch]";
-					pushLines.push({ prefix: ` * ${label}`, from: shortRef, to: shortRef });
-				} else if (update.newHash === ZERO_HASH) {
-					pushLines.push({ prefix: " - [deleted]", from: shortRef, to: "" });
-				} else {
-					const shortOld = await uniqueAbbrev(gitCtx, update.oldHash);
-					const shortNew = await uniqueAbbrev(gitCtx, update.newHash);
-					if (actuallyForced.has(update.name)) {
-						pushLines.push({
-							prefix: ` + ${shortOld}...${shortNew}`,
-							from: shortRef,
-							to: shortRef,
-							suffix: "(forced update)",
-						});
-					} else {
-						pushLines.push({
-							prefix: `   ${shortOld}..${shortNew}`,
-							from: shortRef,
-							to: shortRef,
-						});
-					}
-				}
-			}
-
-			pushLines.sort((a, b) => pushLineSortKey(a) - pushLineSortKey(b));
+			const hasError = result.updates.some((u) => !u.ok);
 
 			const stderr: string[] = [];
-			stderr.push(`To ${config.url}\n`);
-			stderr.push(formatTransferRefLines(pushLines, 0, false));
+			// git still prints the full ref table under -q when any ref is rejected
+			if (!quiet || hasError) {
+				const pushLines = await buildPushStatusLines(gitCtx, result.updates, forceRequested);
+				stderr.push(`To ${config.url}\n`);
+				stderr.push(formatTransferRefLines(pushLines, 0, false));
+			}
 
 			if (hasError) {
+				const hasTagExists = result.updates.some(
+					(u) => !u.ok && u.name.startsWith("refs/tags/") && u.error?.includes("non-fast-forward"),
+				);
 				stderr.push(`error: failed to push some refs to '${config.url}'\n`);
 				const hasFetchFirst = result.updates.some((u) => !u.ok && u.error?.includes("fetch first"));
 				const hasNonFF = result.updates.some((u) => !u.ok && u.error?.includes("non-fast-forward"));
@@ -411,7 +358,9 @@ export function registerPushCommand(parent: Command, ext?: GitExtensions) {
 						merge: `refs/heads/${branchName}`,
 					};
 					await writeConfig(gitCtx, cfg);
-					stdout = `branch '${branchName}' set up to track '${remoteName}/${branchName}'.\n`;
+					if (!quiet) {
+						stdout = `branch '${branchName}' set up to track '${remoteName}/${branchName}'.\n`;
+					}
 				}
 			}
 
@@ -536,6 +485,73 @@ async function resolvePushDefault(
 			"\nTo have this happen automatically for branches without a tracking\n" +
 			"upstream, see 'push.autoSetupRemote' in 'git help config'.\n",
 	);
+}
+
+async function buildPushStatusLines(
+	gitCtx: GitContext,
+	updates: PushRefUpdate[],
+	forceRequested: Set<string>,
+): Promise<TransferRefLine[]> {
+	// Pre-compute ancestry for force-requested refs (parallel)
+	const forceCandidates = updates.filter(
+		(u) => u.ok && u.oldHash && u.newHash !== ZERO_HASH && forceRequested.has(u.name),
+	);
+	const ancestryResults = await Promise.all(
+		forceCandidates.map((u) => isAncestor(gitCtx, u.oldHash!, u.newHash)),
+	);
+	const actuallyForced = new Set<string>();
+	forceCandidates.forEach((u, i) => {
+		if (!ancestryResults[i]) actuallyForced.add(u.name);
+	});
+
+	const pushLines: TransferRefLine[] = [];
+	for (const update of updates) {
+		const isTag = update.name.startsWith("refs/tags/");
+		const shortRef = shortenRef(update.name);
+
+		if (!update.ok) {
+			const isFetchFirst = update.error?.includes("fetch first");
+			const isNonFF = update.error?.includes("non-fast-forward");
+			const reason = isFetchFirst
+				? "fetch first"
+				: isTag && isNonFF
+					? "already exists"
+					: isNonFF
+						? "non-fast-forward"
+						: (update.error ?? "failed");
+			pushLines.push({
+				prefix: " ! [rejected]",
+				from: shortRef,
+				to: shortRef,
+				suffix: `(${reason})`,
+			});
+		} else if (!update.oldHash) {
+			const label = isTag ? "[new tag]" : "[new branch]";
+			pushLines.push({ prefix: ` * ${label}`, from: shortRef, to: shortRef });
+		} else if (update.newHash === ZERO_HASH) {
+			pushLines.push({ prefix: " - [deleted]", from: shortRef, to: "" });
+		} else {
+			const shortOld = await uniqueAbbrev(gitCtx, update.oldHash);
+			const shortNew = await uniqueAbbrev(gitCtx, update.newHash);
+			if (actuallyForced.has(update.name)) {
+				pushLines.push({
+					prefix: ` + ${shortOld}...${shortNew}`,
+					from: shortRef,
+					to: shortRef,
+					suffix: "(forced update)",
+				});
+			} else {
+				pushLines.push({
+					prefix: `   ${shortOld}..${shortNew}`,
+					from: shortRef,
+					to: shortRef,
+				});
+			}
+		}
+	}
+
+	pushLines.sort((a, b) => pushLineSortKey(a) - pushLineSortKey(b));
+	return pushLines;
 }
 
 function pushLineSortKey(line: TransferRefLine): number {

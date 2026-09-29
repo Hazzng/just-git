@@ -1,6 +1,6 @@
 import type { GitExtensions } from "../git.ts";
 import { isRejection } from "../hooks.ts";
-import { err, fatal } from "../lib/command-utils.ts";
+import { err, fatal, quietFlag } from "../lib/command-utils.ts";
 import { readConfig, writeConfig } from "../lib/config.ts";
 import {
 	buildIndex,
@@ -36,6 +36,7 @@ export function registerCloneCommand(parent: Command, ext?: GitExtensions) {
 			noSingleBranch: f().describe("Clone all branches even with --depth"),
 			noTags: f().describe("Don't clone any tags"),
 			noCheckout: f().alias("n").describe("Don't create a checkout"),
+			quiet: quietFlag("be more quiet"),
 		},
 		handler: async (args, ctx) => {
 			const repository = args.repository;
@@ -45,6 +46,7 @@ export function registerCloneCommand(parent: Command, ext?: GitExtensions) {
 
 			const isHttp = repository.startsWith("http://") || repository.startsWith("https://");
 			const branchOpt = args.branch;
+			const quiet = !!args.quiet;
 
 			// For local paths, verify the source is a git repository.
 			// Try resolveRemote with the raw URL first (supports custom URL
@@ -151,9 +153,11 @@ export function registerCloneCommand(parent: Command, ext?: GitExtensions) {
 					bare: args.bare,
 					branch: branchOpt ?? null,
 				});
+				// git keeps the empty-repository warning under -q
+				const cloningInto = quiet ? "" : `Cloning into '${targetName}'...\n`;
 				return {
 					stdout: "",
-					stderr: `Cloning into '${targetName}'...\nwarning: You appear to have cloned an empty repository.\n`,
+					stderr: `${cloningInto}warning: You appear to have cloned an empty repository.\n`,
 					exitCode: 0,
 				};
 			}
@@ -286,7 +290,7 @@ export function registerCloneCommand(parent: Command, ext?: GitExtensions) {
 				});
 				return {
 					stdout: "",
-					stderr: `Cloning into bare repository '${targetName}'...\n`,
+					stderr: quiet ? "" : `Cloning into bare repository '${targetName}'...\n`,
 					exitCode: 0,
 				};
 			}
@@ -336,7 +340,7 @@ export function registerCloneCommand(parent: Command, ext?: GitExtensions) {
 
 			const response = {
 				stdout: "",
-				stderr: `Cloning into '${targetName}'...\n`,
+				stderr: quiet ? "" : `Cloning into '${targetName}'...\n`,
 				exitCode: 0,
 			};
 			await ext?.hooks?.postClone?.({

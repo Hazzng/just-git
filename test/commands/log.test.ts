@@ -1458,4 +1458,60 @@ describe("git log", () => {
 			expect(lines[1]).toContain("alice-1");
 		});
 	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: BASIC_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "first"');
+			await bash.exec("echo more >> /repo/README.md && git commit -am second");
+			return bash;
+		}
+
+		test("-q and --quiet match plain log (no diff by default)", async () => {
+			const bash = await setup();
+			const plain = await bash.exec("git log");
+			expect((await bash.exec("git log -q")).stdout).toBe(plain.stdout);
+			expect((await bash.exec("git log --quiet")).stdout).toBe(plain.stdout);
+		});
+
+		test("explicit diff formats still print regardless of order", async () => {
+			const bash = await setup();
+			for (const opts of ["-p", "--stat", "--numstat", "--shortstat --oneline"]) {
+				const plain = await bash.exec(`git log ${opts}`);
+				expect((await bash.exec(`git log -q ${opts}`)).stdout).toBe(plain.stdout);
+				expect((await bash.exec(`git log ${opts} -q`)).stdout).toBe(plain.stdout);
+			}
+			expect((await bash.exec("git log -p -q -1")).stdout).toContain("diff --git");
+		});
+
+		test("conflicts with --name-only and --name-status", async () => {
+			const bash = await setup();
+			for (const cmd of ["git log -q --name-only", "git log --name-status --quiet --graph"]) {
+				const result = await bash.exec(cmd);
+				expect(result).toMatchObject({
+					stdout: "",
+					stderr:
+						"fatal: options '--name-only', '--name-status', '--check', and '-s' cannot be used together\n",
+					exitCode: 128,
+				});
+			}
+		});
+
+		test("--no-quiet after -q lifts the conflict", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git log -q --no-quiet --name-only -1");
+			const plain = await bash.exec("git log --name-only -1");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe(plain.stdout);
+		});
+
+		test("revision errors take precedence over the conflict", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git log -q --name-only nope");
+			expect(result.exitCode).toBe(128);
+			expect(result.stderr).toContain("fatal: ambiguous argument 'nope'");
+		});
+	});
 });

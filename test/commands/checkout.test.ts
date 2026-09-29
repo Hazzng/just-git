@@ -501,4 +501,159 @@ describe("git checkout", () => {
 			expect(result.stdout).toContain("set up to track");
 		});
 	});
+
+	describe("--quiet", () => {
+		async function setupWithFeature() {
+			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "first"');
+			await bash.exec("git branch feature");
+			return bash;
+		}
+
+		test("-q and --quiet silence branch switch output", async () => {
+			const bash = await setupWithFeature();
+			await bash.exec("echo changed > README.md");
+
+			const q = await bash.exec("git checkout -q feature");
+			expect(q).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/feature");
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("changed\n");
+
+			const quiet = await bash.exec("git checkout --quiet main");
+			expect(quiet).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/main");
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setupWithFeature();
+			await bash.exec("echo changed > README.md");
+
+			const result = await bash.exec("git checkout -q --no-quiet feature");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe("M\tREADME.md\n");
+			expect(result.stderr).toBe("Switched to branch 'feature'\n");
+		});
+
+		test("silences 'Already on'", async () => {
+			const bash = await setupWithFeature();
+			const result = await bash.exec("git checkout -q main");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("silences -b and -B", async () => {
+			const bash = await setupWithFeature();
+
+			const b = await bash.exec("git checkout -q -b topic");
+			expect(b).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/topic");
+
+			const B = await bash.exec("git checkout -q -B feature main");
+			expect(B).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/feature");
+		});
+
+		test("silences detached HEAD advice and orphaned-commit warning", async () => {
+			const bash = await setupWithFeature();
+			const hash = (await bash.exec("git rev-parse HEAD")).stdout.trim();
+
+			const detach = await bash.exec(`git checkout -q ${hash}`);
+			expect(detach).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe(hash);
+
+			await bash.exec("echo lost > lost.txt");
+			await bash.exec("git add lost.txt");
+			await bash.exec('git commit -m "lost"');
+
+			const back = await bash.exec("git checkout -q main");
+			expect(back).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/main");
+			expect(await readFile(bash.fs, "/repo/lost.txt")).toBeUndefined();
+		});
+
+		test("silences cancelled cherry-pick warning but still clears state", async () => {
+			const bash = await setupWithFeature();
+			const hash = (await bash.exec("git rev-parse HEAD")).stdout.trim();
+			await bash.fs.writeFile("/repo/.git/CHERRY_PICK_HEAD", `${hash}\n`);
+
+			const result = await bash.exec("git checkout -q feature");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/repo/.git/CHERRY_PICK_HEAD")).toBeUndefined();
+		});
+
+		test("silences --orphan", async () => {
+			const bash = await setupWithFeature();
+			const result = await bash.exec("git checkout -q --orphan fresh");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/fresh");
+		});
+
+		test("pathspec checkout still restores files", async () => {
+			const bash = await setupWithFeature();
+			await bash.exec("echo changed > README.md");
+
+			const result = await bash.exec("git checkout -q -- README.md");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("# My Project");
+		});
+
+		test("silences DWIM tracking setup message", async () => {
+			const bash = await setupClonePair();
+			await bash.exec(
+				"cd /remote && git checkout -b feature && echo feat > feat.txt && git add . && git commit -m feat",
+			);
+			await bash.exec("cd /local && git fetch");
+
+			const result = await bash.exec("git checkout -q feature", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			const merge = await bash.exec("git config get branch.feature.merge", { cwd: "/local" });
+			expect(merge.stdout).toBe("refs/heads/feature\n");
+			const head = await bash.exec("git branch", { cwd: "/local" });
+			expect(head.stdout).toContain("* feature");
+		});
+
+		test("errors still print", async () => {
+			const bash = await setupWithFeature();
+
+			const missing = await bash.exec("git checkout -q nope");
+			expect(missing.exitCode).toBe(1);
+			expect(missing.stdout).toBe("");
+			expect(missing.stderr).toBe(
+				"error: pathspec 'nope' did not match any file(s) known to git\n",
+			);
+
+			await bash.exec("git checkout -q feature");
+			await bash.exec("echo feature > README.md");
+			await bash.exec("git commit -qam feature");
+			await bash.exec("echo dirty > README.md");
+			const overwrite = await bash.exec("git checkout -q main");
+			expect(overwrite.exitCode).toBe(1);
+			expect(overwrite.stderr).toContain(
+				"error: Your local changes to the following files would be overwritten by checkout:\n\tREADME.md\n",
+			);
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/feature");
+		});
+
+		test("-q -b refuses an unmerged index that plain -b ignores", async () => {
+			const bash = await setupWithFeature();
+			await bash.exec("echo stashed > README.md");
+			await bash.exec("git stash");
+			await bash.exec("echo committed > README.md");
+			await bash.exec("git commit -qam committed");
+			expect((await bash.exec("git stash pop")).exitCode).toBe(1);
+
+			const quiet = await bash.exec("git checkout -q -b quiet-branch");
+			expect(quiet).toMatchObject({
+				stdout: "README.md: needs merge\n",
+				stderr: "error: you need to resolve your current index first\n",
+				exitCode: 1,
+			});
+			expect((await bash.exec("git rev-parse --verify -q quiet-branch")).exitCode).toBe(1);
+
+			const loud = await bash.exec("git checkout -b loud-branch");
+			expect(loud.exitCode).toBe(0);
+			expect(loud.stderr).toBe("Switched to a new branch 'loud-branch'\n");
+		});
+	});
 });

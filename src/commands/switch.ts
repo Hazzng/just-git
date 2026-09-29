@@ -16,6 +16,7 @@ import {
 	err,
 	fatal,
 	isCommandError,
+	quietFlag,
 	requireCommit,
 	requireGitContext,
 } from "../lib/command-utils.ts";
@@ -64,6 +65,7 @@ export function registerSwitchCommand(parent: Command, ext?: GitExtensions) {
 			orphan: o.string().describe("Create a new orphan branch"),
 			guess: f().default(true).describe("Guess branch from remote tracking"),
 			ignoreOtherWorktrees: f().describe("Allow checking out a branch used by another worktree"),
+			quiet: quietFlag("suppress progress reporting"),
 		},
 		handler: async (args, ctx, meta) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -71,6 +73,7 @@ export function registerSwitchCommand(parent: Command, ext?: GitExtensions) {
 			const gitCtx = gitCtxOrError;
 
 			const positional: string | undefined = args["branch-or-start-point"];
+			const quiet = !!args.quiet;
 
 			// ── Orphan branch ─────────────────────────────────────
 			if (args.orphan) {
@@ -80,7 +83,7 @@ export function registerSwitchCommand(parent: Command, ext?: GitExtensions) {
 				if (args.detach) {
 					return fatal("--orphan and --detach are incompatible");
 				}
-				return switchOrphanBranch(gitCtx, args.orphan, ctx.env, ext);
+				return switchOrphanBranch(gitCtx, args.orphan, ctx.env, ext, quiet);
 			}
 
 			// ── Detach ────────────────────────────────────────────
@@ -91,7 +94,7 @@ export function registerSwitchCommand(parent: Command, ext?: GitExtensions) {
 				const rev = positional ?? "HEAD";
 				const result = await requireCommit(gitCtx, rev, `invalid reference: ${rev}`);
 				if (isCommandError(result)) return result;
-				return switchDetachHead(gitCtx, rev, result.hash, ctx.env, ext);
+				return switchDetachHead(gitCtx, rev, result.hash, ctx.env, ext, quiet);
 			}
 
 			// ── Create (-c / -C) ─────────────────────────────────
@@ -108,6 +111,7 @@ export function registerSwitchCommand(parent: Command, ext?: GitExtensions) {
 					ext,
 					undefined,
 					!!args.ignoreOtherWorktrees,
+					quiet,
 				);
 			}
 
@@ -118,7 +122,7 @@ export function registerSwitchCommand(parent: Command, ext?: GitExtensions) {
 
 			// ── "-" shorthand for previous branch ─────────────────
 			if (positional === "-") {
-				return switchToPrevious(gitCtx, ctx.env, ext);
+				return switchToPrevious(gitCtx, ctx.env, ext, quiet);
 			}
 
 			// ── Try as existing branch ────────────────────────────
@@ -133,6 +137,7 @@ export function registerSwitchCommand(parent: Command, ext?: GitExtensions) {
 					ctx.env,
 					ext,
 					!!args.ignoreOtherWorktrees,
+					quiet,
 				);
 			}
 
@@ -148,6 +153,8 @@ export function registerSwitchCommand(parent: Command, ext?: GitExtensions) {
 						ctx.env,
 						ext,
 						guessed.trackingRef,
+						false,
+						quiet,
 					);
 				}
 			}
@@ -194,6 +201,7 @@ async function switchToPrevious(
 	gitCtx: GitContext,
 	env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const previous = await findPreviousCheckoutTarget(gitCtx);
 	if (!previous) return fatal("invalid reference: @{-1}");
@@ -208,7 +216,16 @@ async function switchToPrevious(
 		};
 	}
 
-	return switchToBranch(gitCtx, previous.name, previous.refName, previous.hash, env, ext);
+	return switchToBranch(
+		gitCtx,
+		previous.name,
+		previous.refName,
+		previous.hash,
+		env,
+		ext,
+		false,
+		quiet,
+	);
 }
 
 // ── Create and switch to a new branch ────────────────────────────────
@@ -222,6 +239,7 @@ async function switchCreateBranch(
 	ext?: GitExtensions,
 	trackingRef?: string,
 	ignoreOtherWorktrees = false,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	if (!isValidBranchName(branchName)) {
 		return fatal(`'${branchName}' is not a valid branch name`);
@@ -251,7 +269,7 @@ async function switchCreateBranch(
 			}
 			await createSymbolicRef(gitCtx, "HEAD", refName);
 			await clearDetachPoint(gitCtx);
-			const opWarning = await clearOperationState(gitCtx);
+			const opWarning = await clearOperationState(gitCtx, quiet);
 			await logRef(
 				gitCtx,
 				env,
@@ -262,7 +280,7 @@ async function switchCreateBranch(
 			);
 			return {
 				stdout: "",
-				stderr: `Switched to a new branch '${branchName}'\n${opWarning}`,
+				stderr: quiet ? "" : `Switched to a new branch '${branchName}'\n${opWarning}`,
 				exitCode: 0,
 			};
 		}
@@ -319,7 +337,7 @@ async function switchCreateBranch(
 
 	const head = await readHead(gitCtx);
 	let detachPreamble = "";
-	if (head?.type === "direct" && currentHash) {
+	if (!quiet && head?.type === "direct" && currentHash) {
 		detachPreamble = await buildDetachPreamble(gitCtx, currentHash, targetHash);
 	}
 
@@ -327,7 +345,7 @@ async function switchCreateBranch(
 	await updateRef(gitCtx, refName, targetHash);
 	await createSymbolicRef(gitCtx, "HEAD", refName);
 	await clearDetachPoint(gitCtx);
-	const opWarning = await clearOperationState(gitCtx);
+	const opWarning = await clearOperationState(gitCtx, quiet);
 
 	const startLabel = startPoint ?? "HEAD";
 
@@ -373,6 +391,8 @@ async function switchCreateBranch(
 		isBranchCheckout: true,
 	});
 
+	if (quiet) return { stdout: "", stderr: "", exitCode: 0 };
+
 	const alreadyOnBranch = head?.type === "symbolic" && head.target === refName;
 	const label =
 		force && existing
@@ -414,6 +434,7 @@ async function switchToBranch(
 	env: Map<string, string>,
 	ext?: GitExtensions,
 	ignoreOtherWorktrees = false,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	// An in-progress operation blocks the switch before the worktree check, so
 	// `switch` reports "cannot switch branch while merging" rather than the
@@ -432,7 +453,7 @@ async function switchToBranch(
 		mode: "switch",
 	});
 	if (isRejection(preRej)) return { stdout: "", stderr: preRej.message ?? "", exitCode: 1 };
-	return switchBranchCore(gitCtx, branchName, refName, targetHash, env, ext);
+	return switchBranchCore(gitCtx, branchName, refName, targetHash, env, ext, { quiet });
 }
 
 // ── Detach HEAD at a commit ──────────────────────────────────────────
@@ -443,6 +464,7 @@ async function switchDetachHead(
 	targetHash: ObjectId,
 	env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const opBlock = await checkActiveOperation(gitCtx);
 	if (opBlock) return opBlock;
@@ -452,7 +474,7 @@ async function switchDetachHead(
 		mode: "detach",
 	});
 	if (isRejection(preRej)) return { stdout: "", stderr: preRej.message ?? "", exitCode: 1 };
-	return detachHeadCore(gitCtx, targetHash, env, ext);
+	return detachHeadCore(gitCtx, targetHash, env, ext, { quiet });
 }
 
 // ── Orphan branch (switch --orphan clears index and tracked files) ───
@@ -462,6 +484,7 @@ async function switchOrphanBranch(
 	branchName: string,
 	_env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	if (!isValidBranchName(branchName)) {
 		return fatal(`'${branchName}' is not a valid branch name`);
@@ -485,7 +508,7 @@ async function switchOrphanBranch(
 
 	// Build "Previous HEAD position was ..." preamble when leaving detached HEAD
 	let detachPreamble = "";
-	if (head?.type === "direct" && prevHead) {
+	if (!quiet && head?.type === "direct" && prevHead) {
 		detachPreamble = await formatPrevHeadPosition(gitCtx, prevHead);
 	}
 
@@ -509,7 +532,7 @@ async function switchOrphanBranch(
 
 	await createSymbolicRef(gitCtx, "HEAD", refName);
 	await clearDetachPoint(gitCtx);
-	const opWarning = await clearOperationState(gitCtx);
+	const opWarning = await clearOperationState(gitCtx, quiet);
 
 	await ext?.hooks?.postCheckout?.({
 		repo: gitCtx,
@@ -520,7 +543,7 @@ async function switchOrphanBranch(
 
 	return {
 		stdout: "",
-		stderr: `${detachPreamble}Switched to a new branch '${branchName}'\n${opWarning}`,
+		stderr: quiet ? "" : `${detachPreamble}Switched to a new branch '${branchName}'\n${opWarning}`,
 		exitCode: 0,
 	};
 }

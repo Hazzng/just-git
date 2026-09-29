@@ -15,6 +15,7 @@ import {
 	requireGitContext,
 	requireHead,
 	requireNoConflicts,
+	requireNoConflictsToCommit,
 	stripCommentLines,
 	uniqueAbbrev,
 	writeCommitAndAdvance,
@@ -395,7 +396,7 @@ async function handleContinue(
 
 	const index = await readIndex(gitCtx);
 
-	const conflictErr = requireNoConflicts(index, "Committing");
+	const conflictErr = requireNoConflictsToCommit(index);
 	if (conflictErr) return conflictErr;
 
 	let messageText = await readStateFile(gitCtx, "MERGE_MSG");

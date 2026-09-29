@@ -860,4 +860,90 @@ describe("git branch", () => {
 			expect(results[3].stdout).toBe("main\n");
 		});
 	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			return bash;
+		}
+
+		test("-q suppresses the Deleted branch message", async () => {
+			const bash = await setup();
+			await bash.exec("git branch zz");
+			const result = await bash.exec("git branch -q -d zz");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			const list = await bash.exec("git branch");
+			expect(list.stdout).toBe("* main\n");
+		});
+
+		test("--no-quiet after --quiet restores the message", async () => {
+			const bash = await setup();
+			await bash.exec("git branch zz");
+			const hash = (await bash.exec("git rev-parse --short zz")).stdout.trim();
+			const result = await bash.exec("git branch --quiet --no-quiet -d zz");
+			expect(result.stdout).toBe(`Deleted branch zz (was ${hash}).\n`);
+		});
+
+		test("errors still print", async () => {
+			const bash = await setup();
+			const missing = await bash.exec("git branch -q -d nope");
+			expect(missing).toMatchObject({
+				stdout: "",
+				stderr: "error: branch 'nope' not found\n",
+				exitCode: 1,
+			});
+
+			await bash.exec("git checkout -b tmp");
+			await bash.exec("echo x > x.txt && git add x.txt && git commit -m x");
+			await bash.exec("git checkout main");
+			const unmerged = await bash.exec("git branch -q -d tmp");
+			expect(unmerged.stdout).toBe("");
+			expect(unmerged.stderr).toBe(
+				"error: the branch 'tmp' is not fully merged\n" +
+					"hint: If you are sure you want to delete it, run 'git branch -D tmp'\n" +
+					'hint: Disable this message with "git config set advice.forceDeleteBranch false"\n',
+			);
+			expect(unmerged.exitCode).toBe(1);
+		});
+
+		test("still lists branches", async () => {
+			const bash = await setup();
+			await bash.exec("git branch other");
+			const result = await bash.exec("git branch -q");
+			expect(result.stdout).toBe("* main\n  other\n");
+		});
+
+		test("-q suppresses tracking setup messages but still configures upstream", async () => {
+			const bash = await setupClonePair();
+			const created = await bash.exec("git branch -q feat origin/main", { cwd: "/local" });
+			expect(created).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+
+			await bash.exec("git branch plain", { cwd: "/local" });
+			const set = await bash.exec("git branch -q -u origin/main plain", { cwd: "/local" });
+			expect(set).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+
+			const config = await readFile(bash.fs, "/local/.git/config");
+			expect(config).toContain('[branch "feat"]');
+			expect(config).toContain('[branch "plain"]');
+		});
+
+		test("merged-to-upstream warning still prints", async () => {
+			const bash = await setupClonePair();
+			await bash.exec(
+				"cd /remote && echo more > more.txt && git add . && git commit -m more && cd /local && git fetch",
+			);
+			await bash.exec("git branch ahead origin/main", { cwd: "/local" });
+			const result = await bash.exec("git branch -q -d ahead", { cwd: "/local" });
+			expect(result).toMatchObject({
+				stdout: "",
+				stderr:
+					"warning: deleting branch 'ahead' that has been merged to\n" +
+					"         'refs/remotes/origin/main', but not yet merged to HEAD\n",
+				exitCode: 0,
+			});
+		});
+	});
 });

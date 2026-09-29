@@ -14,6 +14,7 @@ import {
 	requireGitContext,
 	requireHead,
 	requireNoConflicts,
+	requireNoConflictsToCommit,
 	stripCommentLines,
 	uniqueAbbrev,
 	writeCommitAndAdvance,
@@ -476,7 +477,7 @@ async function handleContinue(
 	const index = await readIndex(gitCtx);
 
 	// Check for unresolved conflicts
-	const conflictErr = requireNoConflicts(index, "Committing");
+	const conflictErr = requireNoConflictsToCommit(index);
 	if (conflictErr) return conflictErr;
 
 	const originalCommit = await readCommit(gitCtx, cherryPickHeadHash);

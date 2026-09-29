@@ -1,5 +1,5 @@
 import type { GitExtensions } from "../git.ts";
-import { isCommandError, requireGitContext } from "../lib/command-utils.ts";
+import { isCommandError, quietFlag, requireGitContext } from "../lib/command-utils.ts";
 import { collectAllRoots } from "../lib/gc-roots.ts";
 import { formatRepackStderr, repackFromTips } from "../lib/repack.ts";
 import { type Command, f } from "../parse/index.ts";
@@ -10,6 +10,7 @@ export function registerRepackCommand(parent: Command, ext?: GitExtensions) {
 		options: {
 			all: f().alias("a").describe("Pack all objects, including already-packed"),
 			delete: f().alias("d").describe("After packing, remove redundant packs and loose objects"),
+			quiet: quietFlag("be quiet"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -25,6 +26,10 @@ export function registerRepackCommand(parent: Command, ext?: GitExtensions) {
 				cleanup: args.delete as boolean | undefined,
 				all: args.all as boolean | undefined,
 			});
+
+			if (args.quiet) {
+				return { stdout: "", stderr: "", exitCode: 0 };
+			}
 
 			if (!result) {
 				return {

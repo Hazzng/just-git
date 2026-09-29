@@ -7,6 +7,7 @@ import {
 	formatTransferRefLines,
 	getSequencerDirtyState,
 	isCommandError,
+	quietFlag,
 	requireAuthor,
 	requireCommitter,
 	requireGitContext,
@@ -79,8 +80,10 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 			noFf: f().describe("Create a merge commit even for fast-forwards"),
 			depth: o.number().describe("Limit fetching to the specified number of commits"),
 			unshallow: f().describe("Convert a shallow repository to a complete one"),
+			quiet: quietFlag("be more quiet"),
 		},
 		handler: async (args, ctx) => {
+			const quiet = !!args.quiet;
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
 			if (isCommandError(gitCtxOrError)) return gitCtxOrError;
 			const gitCtx = gitCtxOrError;
@@ -233,27 +236,27 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 					message: oldRefHash ? "pull" : "pull: storing head",
 				});
 			}
-			const abbrevRef = await buildAbbrevResolver(
+			const fetchRefLines = quiet
+				? []
+				: buildRefUpdateLines(
+						refUpdates.map((u, i) => ({ ...u, oldHash: resolvedOldHashes[i]! })),
+						shortenRef,
+						await buildAbbrevResolver(
+							gitCtx,
+							refUpdates.flatMap((u, i) => {
+								const old = resolvedOldHashes[i];
+								return old ? [old, u.remote.hash] : [u.remote.hash];
+							}),
+						),
+					);
+			const tagLines = await autoFollowReachableTags({
 				gitCtx,
-				refUpdates.flatMap((u, i) => {
-					const old = resolvedOldHashes[i];
-					return old ? [old, u.remote.hash] : [u.remote.hash];
-				}),
-			);
-			const fetchRefLines = buildRefUpdateLines(
-				refUpdates.map((u, i) => ({ ...u, oldHash: resolvedOldHashes[i]! })),
-				shortenRef,
-				abbrevRef,
-			);
-			fetchRefLines.push(
-				...(await autoFollowReachableTags({
-					gitCtx,
-					transport,
-					remoteRefs,
-					ident,
-					reflogAction: "pull",
-				})),
-			);
+				transport,
+				remoteRefs,
+				ident,
+				reflogAction: "pull",
+			});
+			if (!quiet) fetchRefLines.push(...tagLines);
 			const fetchOutput =
 				fetchRefLines.length > 0
 					? `From ${config.url}\n${formatTransferRefLines(fetchRefLines, 10)}`
@@ -353,7 +356,9 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 					commitHash: null,
 				});
 				return {
-					stdout: pullUpToDateMessage(head, pullMode, !!args.ffOnly, fetchOutput, false),
+					stdout: quiet
+						? ""
+						: pullUpToDateMessage(head, pullMode, !!args.ffOnly, fetchOutput, false),
 					stderr: fetchOutput,
 					exitCode: 0,
 				};
@@ -368,7 +373,7 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 				// rebase success message. See builtin/pull.c (can_ff path).
 				const rebaseBases = await findAllMergeBases(gitCtx, headHash, theirsHash);
 				if ((rebaseBases[0] ?? null) === headHash) {
-					const ffResult = await handleFastForward(gitCtx, headHash, theirsHash);
+					const ffResult = await handleFastForward(gitCtx, headHash, theirsHash, { quiet });
 					if (ffResult.exitCode === 0) {
 						const refName = head?.type === "symbolic" ? head.target : "HEAD";
 						// The reflog action keeps the original pull flags even though the
@@ -431,7 +436,7 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 					// remote ref name.
 					theirsHash,
 					ext,
-					{ reflogAction: "pull" },
+					{ reflogAction: "pull", quiet },
 				);
 
 				if (result.exitCode === 0) {
@@ -464,7 +469,9 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 					commitHash: null,
 				});
 				return {
-					stdout: pullUpToDateMessage(head, pullMode, !!args.ffOnly, fetchOutput, true),
+					stdout: quiet
+						? ""
+						: pullUpToDateMessage(head, pullMode, !!args.ffOnly, fetchOutput, true),
 					stderr: fetchOutput,
 					exitCode: 0,
 				};
@@ -523,7 +530,7 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 			}
 
 			if (isFastForward && !noFf) {
-				const ffResult = await handleFastForward(gitCtx, headHash, theirsHash);
+				const ffResult = await handleFastForward(gitCtx, headHash, theirsHash, { quiet });
 				if (ffResult.exitCode === 0) {
 					const refName = head?.type === "symbolic" ? head.target : "HEAD";
 					const ffFlagStr = ffOnly ? " --ff-only" : "";
@@ -720,11 +727,13 @@ export function registerPullCommand(parent: Command, ext?: GitExtensions) {
 				});
 			}
 
-			const diffstat = await formatDiffStat(gitCtx, headCommit.tree, treeHash);
 			const mergeMessages =
 				mergeResult.messages.length > 0 ? `${mergeResult.messages.join("\n")}\n` : "";
+			const summary = quiet
+				? ""
+				: `Merge made by the 'ort' strategy.\n${await formatDiffStat(gitCtx, headCommit.tree, treeHash)}`;
 			return {
-				stdout: `${mergeMessages}Merge made by the 'ort' strategy.\n${diffstat}`,
+				stdout: `${mergeMessages}${summary}`,
 				stderr: fetchOutput + renameWarning,
 				exitCode: 0,
 			};

@@ -390,4 +390,61 @@ describe("git clone", () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.stderr).toContain("empty repository");
 	});
+
+	// ── Quiet ─────────────────────────────────────────────────────────
+
+	describe("--quiet", () => {
+		test("-q suppresses 'Cloning into' and still clones", async () => {
+			const bash = await setupSource();
+			const result = await bash.exec("git clone -q /src /clone", { cwd: "/" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/clone/README.md")).toBe("# Hello");
+			expect(await pathExists(bash.fs, "/clone/.git/refs/remotes/origin/main")).toBe(true);
+		});
+
+		test("--quiet suppresses output for a bare clone", async () => {
+			const bash = await setupSource();
+			const result = await bash.exec("git clone --quiet --bare /src /clone.git", { cwd: "/" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/clone.git/HEAD")).toBe(true);
+		});
+
+		test("-q with -b checks out the branch silently", async () => {
+			const bash = await setupSource();
+			await bash.exec(
+				"cd /src && git checkout -b feature && echo 'feat' > feat.txt && git add . && git commit -m 'feature'",
+			);
+			const result = await bash.exec("git clone -q -b feature /src /clone", { cwd: "/" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/clone/feat.txt")).toBe("feat\n");
+		});
+
+		test("-q keeps the empty repository warning", async () => {
+			const bash = createTestBash({ env: ENV, cwd: "/src" });
+			await bash.exec("mkdir -p /src && cd /src && git init");
+			const result = await bash.exec("git clone -q /src /clone", { cwd: "/" });
+			expect(result).toMatchObject({
+				stdout: "",
+				stderr: "warning: You appear to have cloned an empty repository.\n",
+				exitCode: 0,
+			});
+		});
+
+		test("-q still reports errors", async () => {
+			const bash = await setupSource({ "/dest/existing.txt": "stuff" });
+			const result = await bash.exec("git clone -q /src /dest", { cwd: "/" });
+			expect(result).toMatchObject({
+				stdout: "",
+				stderr: "fatal: destination path '/dest' already exists and is not an empty directory.\n",
+				exitCode: 128,
+			});
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setupSource();
+			const result = await bash.exec("git clone -q --no-quiet /src /clone", { cwd: "/" });
+			expect(result.stderr).toBe("Cloning into '/clone'...\n");
+			expect(result.exitCode).toBe(0);
+		});
+	});
 });

@@ -437,6 +437,7 @@ describe("git cherry-pick", () => {
 			// Try --continue without resolving
 			const result = await bash.exec("git cherry-pick --continue");
 			expect(result.exitCode).toBe(128);
+			expect(result.stdout).toBe("U\tfile.txt\n");
 			expect(result.stderr).toContain("unmerged files");
 		});
 	});

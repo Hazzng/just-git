@@ -2,6 +2,7 @@ import type { GitExtensions } from "../git.ts";
 import {
 	fatal,
 	isCommandError,
+	quietFlag,
 	requireCommit,
 	requireGitContext,
 	requireHead,
@@ -11,6 +12,11 @@ import { isRebaseInProgress, rebaseMergeDir } from "../lib/rebase.ts";
 import { readHead } from "../lib/refs.ts";
 import type { ObjectId } from "../lib/types.ts";
 import { a, type Command, f, o } from "../parse/index.ts";
+
+const USAGE =
+	"usage: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase> | --keep-base] [<upstream> [<branch>]]\n" +
+	"   or: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase>] --root [<branch>]\n" +
+	"   or: git rebase --continue | --abort | --skip | --edit-todo\n";
 
 export function registerRebaseCommand(parent: Command, ext?: GitExtensions) {
 	parent.command("rebase", {
@@ -25,6 +31,7 @@ export function registerRebaseCommand(parent: Command, ext?: GitExtensions) {
 			"no-reapply-cherry-picks": f().describe(
 				"Skip commits that are cherry-pick equivalents (default)",
 			),
+			quiet: quietFlag("be quiet. implies --no-stat"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -32,6 +39,18 @@ export function registerRebaseCommand(parent: Command, ext?: GitExtensions) {
 			const gitCtx = gitCtxOrError;
 
 			// ── Resume operations ────────────────────────────────────
+			const actionCount = [args.abort, args.continue, args.skip].filter(Boolean).length;
+			if (
+				actionCount > 1 ||
+				(actionCount === 1 &&
+					(args.upstream !== undefined ||
+						args.onto !== undefined ||
+						args.quiet ||
+						args["reapply-cherry-picks"] ||
+						args["no-reapply-cherry-picks"]))
+			) {
+				return { stdout: "", stderr: USAGE, exitCode: 129 };
+			}
 			if (args.abort) {
 				return handleAbort(gitCtx, ctx.env);
 			}
@@ -92,7 +111,6 @@ export function registerRebaseCommand(parent: Command, ext?: GitExtensions) {
 				ontoHash = upstreamHash;
 			}
 
-			const reapplyCherryPicks = !!args["reapply-cherry-picks"];
 			const ontoLabel = ontoArg ?? upstreamArg;
 
 			return performRebase(
@@ -105,7 +123,7 @@ export function registerRebaseCommand(parent: Command, ext?: GitExtensions) {
 				upstreamArg,
 				ontoLabel,
 				ext,
-				reapplyCherryPicks ? { reapplyCherryPicks: true } : undefined,
+				{ reapplyCherryPicks: !!args["reapply-cherry-picks"], quiet: !!args.quiet },
 			);
 		},
 	});

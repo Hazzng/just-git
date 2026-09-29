@@ -588,4 +588,105 @@ describe("git pull", () => {
 		const originAfter = await readFile(bash.fs, "/local/.git/refs/remotes/origin/main");
 		expect(originAfter).toBe(originBefore);
 	});
+
+	describe("--quiet", () => {
+		const QUIET = { stdout: "", stderr: "", exitCode: 0 };
+
+		async function diverge(bash: Awaited<ReturnType<typeof setupClonePair>>, sameFile = false) {
+			const remoteFile = sameFile ? "README.md" : "remote.txt";
+			const localFile = sameFile ? "README.md" : "local.txt";
+			await bash.exec(
+				`cd /remote && echo remote > ${remoteFile} && git add . && git commit -m 'remote change'`,
+			);
+			await bash.exec(
+				`cd /local && echo local > ${localFile} && git add . && git commit -m 'local change'`,
+			);
+		}
+
+		test("-q silences fetch and fast-forward output", async () => {
+			const bash = await setupClonePair();
+			await bash.exec("cd /remote && echo v2 > README.md && git add . && git commit -m update");
+
+			expect(await bash.exec("git pull -q", { cwd: "/local" })).toMatchObject(QUIET);
+			expect(await readFile(bash.fs, "/local/README.md")).toBe("v2\n");
+			const remoteMain = await readFile(bash.fs, "/remote/.git/refs/heads/main");
+			const tracking = await readFile(bash.fs, "/local/.git/refs/remotes/origin/main");
+			expect(tracking).toBe(remoteMain);
+
+			expect(await bash.exec("git pull --quiet", { cwd: "/local" })).toMatchObject(QUIET);
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setupClonePair();
+			await bash.exec("cd /remote && echo v2 > README.md && git add . && git commit -m update");
+
+			const result = await bash.exec("git pull -q --no-quiet", { cwd: "/local" });
+			expect(result.exitCode).toBe(0);
+			expect(result.stderr).toMatch(/^From \/remote\n/);
+			expect(result.stdout).toMatch(/^Updating [0-9a-f]+\.\.[0-9a-f]+\nFast-forward\n/);
+		});
+
+		test("-q --no-rebase silences a clean merge", async () => {
+			const bash = await setupClonePair();
+			await diverge(bash);
+
+			const result = await bash.exec("git pull -q --no-rebase", { cwd: "/local" });
+			expect(result).toMatchObject(QUIET);
+			const log = await bash.exec("git log -1 --format=%s", { cwd: "/local" });
+			expect(log.stdout).toBe("Merge branch 'main' of /remote\n");
+		});
+
+		test("-q --rebase silences a rebase", async () => {
+			const bash = await setupClonePair();
+			await diverge(bash);
+
+			const result = await bash.exec("git pull -q --rebase", { cwd: "/local" });
+			expect(result).toMatchObject(QUIET);
+			const log = await bash.exec("git log --format=%s", { cwd: "/local" });
+			expect(log.stdout).toBe("local change\nremote change\ninitial\n");
+
+			expect(await bash.exec("git pull -q --rebase", { cwd: "/local" })).toMatchObject(QUIET);
+		});
+
+		test("-q --no-rebase still prints conflicts", async () => {
+			const bash = await setupClonePair();
+			await diverge(bash, true);
+
+			const result = await bash.exec("git pull -q --no-rebase", { cwd: "/local" });
+			expect(result).toMatchObject({
+				stdout:
+					"Auto-merging README.md\n" +
+					"CONFLICT (content): Merge conflict in README.md\n" +
+					"Automatic merge failed; fix conflicts and then commit the result.\n",
+				stderr: "",
+				exitCode: 1,
+			});
+			expect(await pathExists(bash.fs, "/local/.git/MERGE_HEAD")).toBe(true);
+		});
+
+		test("-q --rebase still prints conflicts", async () => {
+			const bash = await setupClonePair();
+			await diverge(bash, true);
+
+			const result = await bash.exec("git pull -q --rebase", { cwd: "/local" });
+			expect(result.exitCode).toBe(1);
+			expect(result.stdout).toContain("CONFLICT (content): Merge conflict in README.md");
+			expect(result.stderr).toMatch(/^error: could not apply [0-9a-f]+\.\.\. local change\n/);
+		});
+
+		test("-q still prints divergence advice", async () => {
+			const bash = await setupClonePair();
+			await diverge(bash);
+
+			const result = await bash.exec("git pull -q", { cwd: "/local" });
+			expect(result.exitCode).toBe(128);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toMatch(
+				/^hint: You have divergent branches and need to specify how to reconcile them\.\n/,
+			);
+			expect(result.stderr).toEndWith(
+				"fatal: Need to specify how to reconcile divergent branches.\n",
+			);
+		});
+	});
 });

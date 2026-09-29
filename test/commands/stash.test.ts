@@ -39,8 +39,10 @@ describe("git stash", () => {
 			await bash.exec("git init");
 
 			const result = await bash.exec("git stash foo");
-			expect(result.exitCode).toBe(1);
-			expect(result.stderr).toContain("Unexpected argument");
+			expect(result.exitCode).toBe(128);
+			expect(result.stderr).toBe(
+				"fatal: subcommand wasn't specified; 'push' can't be assumed due to unexpected token 'foo'\n",
+			);
 		});
 	});
 
@@ -691,6 +693,136 @@ describe("git stash", () => {
 			// Stash should still exist
 			const list = await bash.exec("git stash list");
 			expect(list.stdout).toContain("stash@{0}");
+		});
+	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"');
+			return bash;
+		}
+
+		const QUIET = { stdout: "", stderr: "", exitCode: 0 };
+
+		test("stash -q and push --quiet save silently", async () => {
+			const bash = await setup();
+			expect(await bash.exec("git stash -q")).toMatchObject(QUIET);
+
+			await bash.fs.writeFile("/repo/README.md", "one");
+			expect(await bash.exec("git stash -q")).toMatchObject(QUIET);
+			await bash.fs.writeFile("/repo/README.md", "two");
+			expect(await bash.exec('git stash push --quiet -m "msg"')).toMatchObject(QUIET);
+
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("# My Project");
+			const list = await bash.exec("git stash list");
+			expect(list.stdout).toMatch(
+				/^stash@\{0\}: On main: msg\nstash@\{1\}: WIP on main: [0-9a-f]+ initial\n$/,
+			);
+		});
+
+		test("pop -q applies and drops silently", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/README.md", "changed");
+			await bash.exec("git stash");
+			expect(await bash.exec("git stash pop -q")).toMatchObject(QUIET);
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("changed");
+			expect((await bash.exec("git stash list")).stdout).toBe("");
+		});
+
+		test("apply -q and drop -q are silent", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/README.md", "changed");
+			await bash.exec("git stash");
+			expect(await bash.exec("git stash apply -q")).toMatchObject(QUIET);
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("changed");
+			expect(await bash.exec("git stash drop -q")).toMatchObject(QUIET);
+			expect((await bash.exec("git stash list")).stdout).toBe("");
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/README.md", "changed");
+			const push = await bash.exec("git stash push -q --no-quiet");
+			expect(push.stdout).toMatch(/^Saved working directory and index state WIP on main: /);
+			const pop = await bash.exec("git stash pop -q --no-quiet");
+			expect(pop.stdout).toContain("Changes not staged for commit:");
+			expect(pop.stdout).toMatch(/Dropped refs\/stash@\{0\} \([0-9a-f]{40}\)\n$/);
+		});
+
+		test("pop -q conflict prints only the kept notice", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/README.md", "stashed");
+			await bash.exec("git stash");
+			await bash.fs.writeFile("/repo/README.md", "committed");
+			await bash.exec('git commit -am "conflicting"');
+
+			const result = await bash.exec("git stash pop -q");
+			expect(result).toMatchObject({
+				stdout: "The stash entry is kept in case you need it again.\n",
+				stderr: "",
+				exitCode: 1,
+			});
+			expect(await readFile(bash.fs, "/repo/README.md")).toContain("<<<<<<< Updated upstream");
+			expect((await bash.exec("git stash list")).stdout).toContain("stash@{0}");
+		});
+
+		test("apply -q conflict is silent but exits 1", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/README.md", "stashed");
+			await bash.exec("git stash");
+			await bash.fs.writeFile("/repo/README.md", "committed");
+			await bash.exec('git commit -am "conflicting"');
+
+			const result = await bash.exec("git stash apply -q");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 1 });
+		});
+
+		test("pop -q still reports errors", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/README.md", "stashed");
+			await bash.exec("git stash");
+			await bash.fs.writeFile("/repo/README.md", "dirty");
+
+			const result = await bash.exec("git stash pop -q");
+			expect(result.exitCode).toBe(1);
+			expect(result.stdout).toBe("The stash entry is kept in case you need it again.\n");
+			expect(result.stderr).toBe(
+				"error: Your local changes to the following files would be overwritten by merge:\n" +
+					"\tREADME.md\n" +
+					"Please commit your changes or stash them before you merge.\n" +
+					"Aborting\n",
+			);
+
+			const bad = await bash.exec("git stash drop -q stash@{5}");
+			expect(bad.exitCode).not.toBe(0);
+			expect(bad.stderr).not.toBe("");
+		});
+
+		test("pop -q keeps 'Already up to date.' for untracked-only stashes", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/new.txt", "untracked");
+			await bash.exec("git stash -q -u");
+			const result = await bash.exec("git stash pop -q");
+			expect(result).toMatchObject({ stdout: "Already up to date.\n", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/repo/new.txt")).toBe("untracked");
+		});
+
+		test("-q before a subcommand is not an implied push", async () => {
+			const bash = await setup();
+			await bash.fs.writeFile("/repo/README.md", "changed");
+			for (const cmd of ["git stash -q pop", "git stash --quiet apply", "git stash frob"]) {
+				const token = cmd.split(" ").at(-1);
+				expect(await bash.exec(cmd)).toMatchObject({
+					stdout: "",
+					stderr: `fatal: subcommand wasn't specified; 'push' can't be assumed due to unexpected token '${token}'\n`,
+					exitCode: 128,
+				});
+			}
+			expect(await readFile(bash.fs, "/repo/README.md")).toBe("changed");
+			expect((await bash.exec("git stash list")).stdout).toBe("");
 		});
 	});
 });

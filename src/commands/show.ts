@@ -4,6 +4,7 @@ import {
 	buildAbbrevResolver,
 	fatal,
 	isCommandError,
+	quietFlag,
 	requireCommit,
 	requireGitContext,
 	requireHead,
@@ -43,6 +44,9 @@ import { a, type Command, f, o } from "../parse/index.ts";
 
 const decoder = new TextDecoder();
 
+const QUIET_NAME_CONFLICT =
+	"options '--name-only', '--name-status', '--check', and '-s' cannot be used together";
+
 type ShowDiffFormat =
 	| "patch"
 	| "stat"
@@ -59,6 +63,7 @@ export function registerShowCommand(parent: Command, ext?: GitExtensions) {
 		options: {
 			patch: f().alias("p").describe("Show diff in patch format"),
 			noPatch: f().describe("Suppress diff output"),
+			quiet: quietFlag("suppress diff output"),
 			stat: f().describe("Show diffstat summary"),
 			nameOnly: f().describe("Show only names of changed files"),
 			nameStatus: f().describe("Show names and status of changed files"),
@@ -75,10 +80,13 @@ export function registerShowCommand(parent: Command, ext?: GitExtensions) {
 			const objectArgs = args.object;
 			const rev = objectArgs[0] ?? "HEAD";
 
+			// -q adds git's NO_OUTPUT diff format, which conflicts with these.
+			const quietConflict = args.quiet && (args.nameOnly || args.nameStatus);
+
 			// ── Handle <rev>:<path> syntax ─────────────────────────
 			const revPath = parseRevPath(rev);
 			if (revPath) {
-				return handleRevPath(gitCtx, revPath.rev, revPath.path);
+				return handleRevPath(gitCtx, revPath.rev, revPath.path, quietConflict);
 			}
 
 			// For HEAD default, check if there are commits
@@ -89,6 +97,7 @@ export function registerShowCommand(parent: Command, ext?: GitExtensions) {
 
 			const hash = await requireRevision(gitCtx, rev, `bad object '${rev}'`);
 			if (isCommandError(hash)) return hash;
+			if (quietConflict) return fatal(QUIET_NAME_CONFLICT);
 
 			const raw = await readObject(gitCtx, hash);
 			const renameState: RenameWarningState = {
@@ -109,6 +118,8 @@ export function registerShowCommand(parent: Command, ext?: GitExtensions) {
 				diffFormat = "shortstat";
 			} else if (args.numstat) {
 				diffFormat = "numstat";
+			} else if (args.quiet && !args.patch) {
+				diffFormat = null;
 			} else {
 				diffFormat = "patch";
 			}
@@ -177,6 +188,7 @@ async function handleRevPath(
 	ctx: GitContext,
 	rev: string,
 	path: string,
+	quietConflict: boolean,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const result = await requireCommit(ctx, rev);
 	if (isCommandError(result)) return result;
@@ -196,6 +208,7 @@ async function handleRevPath(
 		}
 		return fatal(msg);
 	}
+	if (quietConflict) return fatal(QUIET_NAME_CONFLICT);
 
 	const raw = await readObject(ctx, entry.hash);
 	if (raw.type === "blob") {

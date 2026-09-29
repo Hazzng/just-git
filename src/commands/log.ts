@@ -4,6 +4,7 @@ import {
 	buildAbbrevResolver,
 	fatal,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 	requireHead,
 } from "../lib/command-utils.ts";
@@ -72,6 +73,7 @@ export function registerLogCommand(parent: Command, ext?: GitExtensions) {
 			nameOnly: f().describe("Show only names of changed files"),
 			shortstat: f().describe("Show only the shortstat summary line"),
 			numstat: f().describe("Machine-readable insertions/deletions per file"),
+			quiet: quietFlag("suppress diff output"),
 			graph: f().describe("Draw text-based graph of the commit history"),
 			firstParent: f().describe("Follow only the first parent of merge commits"),
 			skip: o.number().describe("Skip number of commits before starting to show output"),
@@ -170,6 +172,14 @@ export function registerLogCommand(parent: Command, ext?: GitExtensions) {
 
 			if (startHashes.length === 0) {
 				return fatal("your current branch does not have any commits yet");
+			}
+
+			// -q adds git's NO_OUTPUT diff format: log shows no diff by default, so
+			// it only matters here, where it conflicts with the name formats.
+			if (args.quiet && (args.nameOnly || args.nameStatus)) {
+				return fatal(
+					"options '--name-only', '--name-status', '--check', and '-s' cannot be used together",
+				);
 			}
 
 			// ── Path filter ─────────────────────────────────────────

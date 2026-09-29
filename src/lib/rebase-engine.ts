@@ -384,10 +384,12 @@ export async function performRebase(
 	upstreamLabel: string,
 	checkoutLabel: string,
 	ext?: GitExtensions,
-	options?: { reapplyCherryPicks?: boolean; reflogAction?: "rebase" | "pull" },
+	options?: { reapplyCherryPicks?: boolean; reflogAction?: "rebase" | "pull"; quiet?: boolean },
 ): Promise<CommandResult> {
 	const branchName = headName.startsWith("refs/heads/") ? branchNameFromRef(headName) : "HEAD";
 	const reflogAction = options?.reflogAction ?? "rebase";
+	const quiet = options?.quiet ?? false;
+	const successMsg = quiet ? "" : `Successfully rebased and updated ${headName}.\n`;
 
 	// ── Clean worktree check ─────────────────────────────────
 	const currentIndex = await readIndex(gitCtx);
@@ -429,7 +431,7 @@ export async function performRebase(
 	// that yields the up-to-date message.
 	if (await canRebaseFastForward(gitCtx, ontoHash, upstreamHash, origHead)) {
 		return {
-			stdout: upToDateMessage(branchName),
+			stdout: quiet ? "" : upToDateMessage(branchName),
 			stderr: "",
 			exitCode: 0,
 		};
@@ -456,7 +458,7 @@ export async function performRebase(
 			);
 			return {
 				stdout: "",
-				stderr: `Successfully rebased and updated ${headName}.\n`,
+				stderr: successMsg,
 				exitCode: 0,
 			};
 		}
@@ -475,13 +477,14 @@ export async function performRebase(
 		);
 		return {
 			stdout: "",
-			stderr: `Successfully rebased and updated ${headName}.\n`,
+			stderr: successMsg,
 			exitCode: 0,
 		};
 	}
 
 	// ── Cherry-pick skip detection ──────────────────────────
 	const skippedWarnings: string[] = [];
+	let skippedAny = false;
 	const filteredCommits: typeof commits = [];
 
 	if (options?.reapplyCherryPicks) {
@@ -498,9 +501,12 @@ export async function performRebase(
 			for (const c of commits) {
 				const pid = await computePatchId(gitCtx, c.hash);
 				if (pid && leftPatchIds.has(pid)) {
-					skippedWarnings.push(
-						`warning: skipped previously applied commit ${await uniqueAbbrev(gitCtx, c.hash)}`,
-					);
+					skippedAny = true;
+					if (!quiet) {
+						skippedWarnings.push(
+							`warning: skipped previously applied commit ${await uniqueAbbrev(gitCtx, c.hash)}`,
+						);
+					}
 				} else {
 					filteredCommits.push(c);
 				}
@@ -510,10 +516,11 @@ export async function performRebase(
 		}
 	}
 
+	// git drops the per-commit warnings under -q but still prints the advice.
 	let skipStderr = "";
-	if (skippedWarnings.length > 0) {
+	if (skippedAny) {
 		skipStderr =
-			`${skippedWarnings.join("\n")}\n` +
+			skippedWarnings.map((w) => `${w}\n`).join("") +
 			"hint: use --reapply-cherry-picks to include skipped commits\n" +
 			'hint: Disable this message with "git config set advice.skippedCherryPicks false"\n';
 	}
@@ -541,7 +548,7 @@ export async function performRebase(
 			);
 			return {
 				stdout: "",
-				stderr: `${skipStderr}Successfully rebased and updated ${headName}.\n`,
+				stderr: skipStderr + successMsg,
 				exitCode: 0,
 			};
 		}
@@ -562,7 +569,7 @@ export async function performRebase(
 		);
 		return {
 			stdout: "",
-			stderr: `${skipStderr}Successfully rebased and updated ${headName}.\n`,
+			stderr: skipStderr + successMsg,
 			exitCode: 0,
 		};
 	}
@@ -618,7 +625,7 @@ export async function performRebase(
 		);
 		return {
 			stdout: "",
-			stderr: `${skipStderr}Successfully rebased and updated ${headName}.\n`,
+			stderr: skipStderr + successMsg,
 			exitCode: 0,
 		};
 	}
@@ -654,6 +661,7 @@ export async function performRebase(
 		msgnum: skippedCount,
 		end: skippedCount + todo.length,
 		reflogAction,
+		...(quiet ? { quiet } : {}),
 	};
 	await writeRebaseState(gitCtx, state);
 	await updateRef(gitCtx, "ORIG_HEAD", origHead);
@@ -684,7 +692,7 @@ async function runPickLoop(
 		if (!entry) break;
 
 		// Emit progress (uses \r so terminal overwrites the line)
-		stderrLines.push(`Rebasing (${state.msgnum + 1}/${state.end})\r`);
+		if (!state.quiet) stderrLines.push(`Rebasing (${state.msgnum + 1}/${state.end})\r`);
 
 		// Advance state BEFORE the pick (matching real git: the done file
 		// records attempted picks, not just successful ones).
@@ -1033,7 +1041,7 @@ async function finishRebase(
 	}
 
 	const refLabel = state.headName;
-	const successMsg = `Successfully rebased and updated ${refLabel}.\n`;
+	const successMsg = state.quiet ? "" : `Successfully rebased and updated ${refLabel}.\n`;
 
 	// Clean up all state (including any cherry-pick/merge started mid-rebase)
 	await deleteRef(gitCtx, "REBASE_HEAD");

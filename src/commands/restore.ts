@@ -5,6 +5,7 @@ import {
 	fatal,
 	getCwdPrefix,
 	isCommandError,
+	quietFlag,
 	requireCommit,
 	requireGitContext,
 } from "../lib/command-utils.ts";
@@ -34,6 +35,7 @@ export function registerRestoreCommand(parent: Command, ext?: GitExtensions) {
 			worktree: f().alias("W").describe("Restore the working tree (default)"),
 			ours: f().describe("Checkout our version for unmerged files"),
 			theirs: f().describe("Checkout their version for unmerged files"),
+			quiet: quietFlag("suppress progress reporting"),
 		},
 		handler: async (args, ctx, meta) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);

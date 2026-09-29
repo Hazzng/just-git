@@ -7,20 +7,16 @@ import {
 	firstLine,
 	formatCommitOneLiner,
 	isCommandError,
+	quietFlag,
 	requireAuthor,
 	requireCommitter,
 	requireGitContext,
 	requireWorkTree,
 	stripCommentLines,
+	requireNoConflictsToCommit,
 } from "../lib/command-utils.ts";
 import { formatCommitSummary } from "../lib/commit-summary.ts";
-import {
-	getStage0Entries,
-	hasConflicts,
-	readIndex,
-	removeEntry,
-	writeIndex,
-} from "../lib/index.ts";
+import { getStage0Entries, readIndex, removeEntry, writeIndex } from "../lib/index.ts";
 import { hashObject, readCommit, writeObject } from "../lib/object-db.ts";
 import { serializeCommit } from "../lib/objects/commit.ts";
 import {
@@ -62,7 +58,7 @@ export function registerCommitCommand(parent: Command, ext?: GitExtensions) {
 			amend: f().describe("Amend the previous commit"),
 			noEdit: f().describe("Use the previous commit message without editing"),
 			all: f().alias("a").describe("Auto-stage modified and deleted tracked files"),
-			quiet: f().alias("q").describe("Suppress commit summary"),
+			quiet: quietFlag("suppress summary after successful commit"),
 		},
 		handler: async (args, ctx) => {
 			const messages = args.message as string[];
@@ -147,28 +143,8 @@ export function registerCommitCommand(parent: Command, ext?: GitExtensions) {
 				// Unmerged files check below catches the error if conflicts exist.
 			}
 
-			// Check for unresolved merge conflicts (entries with stage > 0)
-			if (hasConflicts(index)) {
-				// Real git outputs the unmerged file list (short format) to stdout
-				const seen = new Set<string>();
-				const unmergedLines: string[] = [];
-				for (const e of index.entries) {
-					if (e.stage > 0 && !seen.has(e.path)) {
-						seen.add(e.path);
-						unmergedLines.push(`U\t${e.path}`);
-					}
-				}
-				unmergedLines.sort();
-				return {
-					stdout: unmergedLines.length > 0 ? `${unmergedLines.join("\n")}\n` : "",
-					stderr:
-						"error: Committing is not possible because you have unmerged files.\n" +
-						"hint: Fix them up in the work tree, and then use 'git add/rm <file>'\n" +
-						"hint: as appropriate to mark resolution and make a commit.\n" +
-						"fatal: Exiting because of an unresolved conflict.\n",
-					exitCode: 128,
-				};
-			}
+			const conflictErr = requireNoConflictsToCommit(index);
+			if (conflictErr) return conflictErr;
 
 			// Read the old commit when amending (used for parents, message fallback, author)
 			const oldCommit = isAmend && headHash ? await readCommit(gitCtx, headHash) : null;
@@ -441,7 +417,10 @@ export function registerCommitCommand(parent: Command, ext?: GitExtensions) {
 				parents,
 				author,
 			});
-			if (args.quiet) return { stdout: "", stderr: "", exitCode: 0 };
+
+			if (args.quiet) {
+				return { stdout: "", stderr: "", exitCode: 0 };
+			}
 
 			// Format output — for amend, diff against the amended commit's parent
 			const branchRef = head?.type === "symbolic" ? head.target : null;

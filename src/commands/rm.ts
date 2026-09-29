@@ -4,6 +4,7 @@ import {
 	fatal,
 	getCwdPrefix,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 	requireWorkTree,
 } from "../lib/command-utils.ts";
@@ -27,6 +28,7 @@ export function registerRmCommand(parent: Command, ext?: GitExtensions) {
 			recursive: f().alias("r").describe("Allow recursive removal when a directory name is given"),
 			force: f().alias("f").describe("Override the up-to-date check"),
 			dryRun: f().alias("n").describe("Don't actually remove any file(s)"),
+			quiet: quietFlag("do not list removed files"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -112,7 +114,7 @@ export function registerRmCommand(parent: Command, ext?: GitExtensions) {
 
 			// ── Dry-run: just print what would be removed ───────────────
 			if (args.dryRun) {
-				const removedLines = entriesToRemove.map((p) => `rm '${p}'`);
+				const removedLines = args.quiet ? [] : entriesToRemove.map((p) => `rm '${p}'`);
 				const stdout = removedLines.length > 0 ? `${removedLines.join("\n")}\n` : "";
 				return { stdout, stderr: "", exitCode: 0 };
 			}
@@ -131,7 +133,7 @@ export function registerRmCommand(parent: Command, ext?: GitExtensions) {
 						await ctx.fs.rm(fullPath);
 					}
 				}
-				removedLines.push(`rm '${path}'`);
+				if (!args.quiet) removedLines.push(`rm '${path}'`);
 			}
 
 			await writeIndex(gitCtx, index);

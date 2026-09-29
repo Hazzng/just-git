@@ -6,6 +6,7 @@ import {
 	fatal,
 	hasStagedChanges,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 } from "../lib/command-utils.ts";
 import { movePath } from "../lib/fs-utils.ts";
@@ -70,7 +71,7 @@ export function registerWorktreeCommand(parent: Command, ext?: GitExtensions) {
 			lock: f().describe("Keep the worktree locked after creation"),
 			reason: o.string().describe("Reason for locking"),
 			noCheckout: f().describe("Do not populate the new worktree"),
-			quiet: f().alias("q").describe("Suppress progress output"),
+			quiet: quietFlag("Suppress progress output"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);

@@ -442,6 +442,7 @@ describe("git revert", () => {
 			// Try --continue without resolving
 			const result = await bash.exec("git revert --continue");
 			expect(result.exitCode).toBe(128);
+			expect(result.stdout).toBe("U\tfile.txt\n");
 			expect(result.stderr).toContain("unmerged files");
 		});
 	});

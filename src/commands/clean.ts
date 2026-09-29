@@ -3,6 +3,7 @@ import {
 	fatal,
 	getCwdPrefix,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 	requireWorkTree,
 } from "../lib/command-utils.ts";
@@ -40,6 +41,7 @@ export function registerCleanCommand(parent: Command, ext?: GitExtensions) {
 			removeIgnored: f().alias("x").describe("Remove ignored files as well"),
 			onlyIgnored: f().alias("X").describe("Remove only ignored files"),
 			exclude: o.string().alias("e").describe("Additional exclude pattern"),
+			quiet: quietFlag("do not print names of files removed"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -97,22 +99,25 @@ export function registerCleanCommand(parent: Command, ext?: GitExtensions) {
 			// Sort for deterministic output
 			filtered.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
+			const quiet = args.quiet;
 			const lines: string[] = [];
 
 			if (dryRun) {
-				for (const c of filtered) {
-					const label = c.isDir ? `Would remove ${c.path}/` : `Would remove ${c.path}`;
-					lines.push(label);
+				if (!quiet) {
+					for (const c of filtered) {
+						const label = c.isDir ? `Would remove ${c.path}/` : `Would remove ${c.path}`;
+						lines.push(label);
+					}
 				}
 			} else {
 				for (const c of filtered) {
 					const fullPath = join(workTree, c.path);
 					if (c.isDir) {
 						await ctx.fs.rm(fullPath, { recursive: true });
-						lines.push(`Removing ${c.path}/`);
+						if (!quiet) lines.push(`Removing ${c.path}/`);
 					} else {
 						await ctx.fs.rm(fullPath);
-						lines.push(`Removing ${c.path}`);
+						if (!quiet) lines.push(`Removing ${c.path}`);
 					}
 				}
 			}

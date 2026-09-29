@@ -751,5 +751,86 @@ describe("git commit", () => {
 			expect(second.stderr).toBe("");
 			expect((await bash.exec("git log --format=%s -2")).stdout).toContain("second\nfirst");
 		});
+
+		test("-q and --quiet suppress the commit summary", async () => {
+			const { results, bash } = await runScenario(
+				[
+					"git init",
+					"git add .",
+					'git commit -q -m "first"',
+					"echo change >> README.md",
+					'git commit --quiet -am "second"',
+					"git log --format=%s",
+				],
+				{ files: EMPTY_REPO, env: TEST_ENV },
+			);
+			for (const i of [2, 4]) {
+				expect(results[i]).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			}
+			expect(results[5].stdout).toBe("second\nfirst\n");
+			const status = await bash.exec("git status --porcelain");
+			expect(status.stdout).toBe("");
+		});
+
+		test("combined short flags -qam", async () => {
+			const { results } = await runScenario(
+				[
+					"git init",
+					"git add .",
+					"git commit -qm first",
+					"echo x >> README.md",
+					"git commit -qam two",
+				],
+				{ files: EMPTY_REPO, env: TEST_ENV },
+			);
+			expect(results[4]).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("--no-quiet after -q restores the summary", async () => {
+			const { results } = await runScenario(
+				["git init", "git add .", 'git commit -q --no-quiet -m "first"'],
+				{ files: EMPTY_REPO, env: TEST_ENV },
+			);
+			expect(results[2].exitCode).toBe(0);
+			expect(results[2].stdout).toMatch(/^\[main \(root-commit\) [0-9a-f]{7}\] first\n/);
+		});
+
+		test("--amend -q is silent", async () => {
+			const { results } = await runScenario(
+				["git init", "git add .", 'git commit -m "first"', 'git commit -q --amend -m "amended"'],
+				{ files: EMPTY_REPO, env: TEST_ENV },
+			);
+			expect(results[3]).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("nothing to commit still prints status", async () => {
+			const { results } = await runScenario(
+				["git init", "git add .", 'git commit -m "first"', 'git commit -q -m "again"'],
+				{ files: EMPTY_REPO, env: TEST_ENV },
+			);
+			expect(results[3].exitCode).toBe(1);
+			expect(results[3].stdout).toBe("On branch main\nnothing to commit, working tree clean\n");
+		});
+
+		test("unmerged files error still prints", async () => {
+			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "first"');
+			await bash.exec("git checkout -b side");
+			await bash.fs.writeFile("/repo/README.md", "side");
+			await bash.exec('git commit -am "side"');
+			await bash.exec("git checkout main");
+			await bash.fs.writeFile("/repo/README.md", "main");
+			await bash.exec('git commit -am "main"');
+			await bash.exec("git merge side");
+
+			const result = await bash.exec('git commit -q -m "merge"');
+			expect(result.exitCode).toBe(128);
+			expect(result.stdout).toBe("U\tREADME.md\n");
+			expect(result.stderr).toContain(
+				"error: Committing is not possible because you have unmerged files.",
+			);
+		});
 	});
 });

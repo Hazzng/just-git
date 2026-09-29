@@ -422,6 +422,7 @@ async function restoreUntrackedFiles(
 export async function applyStash(
 	ctx: GitContext,
 	stashIndex: number = 0,
+	options?: { quiet?: boolean },
 ): Promise<StashApplyResult> {
 	if (!ctx.workTree)
 		return {
@@ -653,18 +654,22 @@ export async function applyStash(
 		await writeIndex(ctx, { version: 2, entries: kept });
 	}
 
+	// Under -q git silences merge-ort's messages (even CONFLICT lines), but not
+	// the "Already up to date." fast path above.
+	const messages = options?.quiet ? [] : result.messages;
+
 	// ── Restore untracked files from 3rd parent ─────────────────
 	if (untrackedParentHash) {
 		const uResult = await restoreUntrackedFiles(ctx, untrackedParentHash);
 		if (!uResult.ok) {
-			return { ...uResult, messages: result.messages };
+			return { ...uResult, messages };
 		}
 	}
 
 	return {
 		ok: true,
 		hasConflicts: hasAnyConflicts,
-		messages: result.messages,
+		messages,
 	};
 }
 

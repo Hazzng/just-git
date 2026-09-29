@@ -3,6 +3,7 @@ import {
 	ambiguousArgError,
 	fatal,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 	uniqueAbbrev,
 } from "../lib/command-utils.ts";
@@ -38,6 +39,9 @@ export function registerRevParseCommand(parent: Command, ext?: GitExtensions) {
 			"is-bare-repository": f().describe("Output whether the repository is bare"),
 			"show-prefix": f().describe("Show path of cwd relative to top-level directory"),
 			"show-cdup": f().describe("Show relative path from cwd up to top-level directory"),
+			quiet: quietFlag(
+				"With --verify, exit non-zero silently instead of erroring on an invalid object name",
+			),
 		},
 		handler: async (args, ctx) => {
 			const revArgs = args.args.filter((s) => s !== "");
@@ -106,15 +110,19 @@ export function registerRevParseCommand(parent: Command, ext?: GitExtensions) {
 				return { stdout: out, stderr: "", exitCode: 0 };
 			}
 
+			const quietVerify = verify && args.quiet;
+
 			if (verify && revArgs.length !== 1) {
-				return fatal("Needed a single revision");
+				return quietVerify
+					? { stdout: "", stderr: "", exitCode: 1 }
+					: fatal("Needed a single revision");
 			}
 
 			for (const rev of revArgs) {
 				if (abbrevRef) {
 					const name = await resolveAbbrevRef(gitCtx, rev);
 					if (name === null) {
-						return revError(rev, verify);
+						return revError(rev, verify, quietVerify);
 					}
 					lines.push(name);
 					continue;
@@ -123,7 +131,7 @@ export function registerRevParseCommand(parent: Command, ext?: GitExtensions) {
 				if (symbolicFullName) {
 					const name = await resolveSymbolicFullName(gitCtx, rev);
 					if (name === null) {
-						return revError(rev, verify);
+						return revError(rev, verify, quietVerify);
 					}
 					lines.push(name);
 					continue;
@@ -138,6 +146,7 @@ export function registerRevParseCommand(parent: Command, ext?: GitExtensions) {
 						revPathResult.path,
 					);
 					if (resolved === null) {
+						if (verify) return revError(rev, verify, quietVerify);
 						const normalizedPath = revPathResult.path.replace(/^\//, "");
 						return fatal(`path '${normalizedPath}' does not exist in '${revPathResult.rev}'`);
 					}
@@ -147,7 +156,7 @@ export function registerRevParseCommand(parent: Command, ext?: GitExtensions) {
 
 				const hash = await resolveRevision(gitCtx, rev);
 				if (!hash) {
-					return revError(rev, verify);
+					return revError(rev, verify, quietVerify);
 				}
 
 				lines.push(short ? await uniqueAbbrev(gitCtx, hash) : hash);
@@ -162,7 +171,11 @@ export function registerRevParseCommand(parent: Command, ext?: GitExtensions) {
 function revError(
 	rev: string,
 	verify: boolean,
+	quiet: boolean,
 ): { stdout: string; stderr: string; exitCode: number } {
+	if (quiet) {
+		return { stdout: "", stderr: "", exitCode: 1 };
+	}
 	if (verify) {
 		return fatal("Needed a single revision");
 	}

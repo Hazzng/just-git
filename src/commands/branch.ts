@@ -6,6 +6,7 @@ import {
 	fatal,
 	firstLine,
 	isCommandError,
+	quietFlag,
 	requireCommit,
 	requireGitContext,
 } from "../lib/command-utils.ts";
@@ -108,6 +109,7 @@ export function registerBranchCommand(parent: Command, ext?: GitExtensions) {
 			showCurrent: f().describe("Print the current branch name"),
 			setUpstreamTo: o.string().alias("u").describe("Set upstream tracking branch"),
 			verbose: f().alias("v").count().describe("Show hash and subject"),
+			quiet: quietFlag("suppress informational messages"),
 		},
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -311,7 +313,9 @@ export function registerBranchCommand(parent: Command, ext?: GitExtensions) {
 
 				await deleteRef(gitCtx, refName);
 				return {
-					stdout: `Deleted branch ${args.name} (was ${await uniqueAbbrev(gitCtx, hash)}).\n`,
+					stdout: args.quiet
+						? ""
+						: `Deleted branch ${args.name} (was ${await uniqueAbbrev(gitCtx, hash)}).\n`,
 					stderr: deleteWarning,
 					exitCode: 0,
 				};
@@ -352,7 +356,7 @@ export function registerBranchCommand(parent: Command, ext?: GitExtensions) {
 				await writeConfig(gitCtx, config);
 
 				return {
-					stdout: `branch '${branchName}' set up to track '${upstream}'.\n`,
+					stdout: args.quiet ? "" : `branch '${branchName}' set up to track '${upstream}'.\n`,
 					stderr: "",
 					exitCode: 0,
 				};
@@ -403,7 +407,7 @@ export function registerBranchCommand(parent: Command, ext?: GitExtensions) {
 				if (startPoint) {
 					trackingMsg = await maybeSetupTracking(gitCtx, args.name, startPoint);
 				}
-				return { stdout: "", stderr: trackingMsg, exitCode: 0 };
+				return { stdout: "", stderr: args.quiet ? "" : trackingMsg, exitCode: 0 };
 			}
 
 			// ── List branches ───────────────────────────────────────────

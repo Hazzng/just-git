@@ -376,4 +376,105 @@ describe("git switch", () => {
 			expect(result.stdout).toContain("branch 'feature' set up to track 'origin/feature'.");
 		});
 	});
+
+	describe("--quiet", () => {
+		async function setupWithFeature() {
+			const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "first"');
+			await bash.exec("git branch feature");
+			return bash;
+		}
+
+		test("-q and --quiet silence branch switch output", async () => {
+			const bash = await setupWithFeature();
+			await bash.exec("echo changed > README.md");
+
+			const q = await bash.exec("git switch -q feature");
+			expect(q).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/feature");
+
+			const quiet = await bash.exec("git switch --quiet main");
+			expect(quiet).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/main");
+
+			const already = await bash.exec("git switch -q main");
+			expect(already).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setupWithFeature();
+			await bash.exec("echo changed > README.md");
+
+			const result = await bash.exec("git switch -q --no-quiet feature");
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toBe("M\tREADME.md\n");
+			expect(result.stderr).toBe("Switched to branch 'feature'\n");
+		});
+
+		test("silences -c, -C, --detach and --orphan", async () => {
+			const bash = await setupWithFeature();
+			const hash = (await bash.exec("git rev-parse HEAD")).stdout.trim();
+
+			const c = await bash.exec("git switch -q -c topic");
+			expect(c).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/topic");
+
+			const C = await bash.exec("git switch -q -C feature main");
+			expect(C).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/feature");
+
+			const detach = await bash.exec("git switch -q --detach main");
+			expect(detach).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe(hash);
+
+			const orphan = await bash.exec("git switch -q --orphan fresh");
+			expect(orphan).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/fresh");
+		});
+
+		test("silences orphaned-commit warning when leaving detached HEAD", async () => {
+			const bash = await setupWithFeature();
+			await bash.exec("git switch -q --detach");
+			await bash.exec("echo lost > lost.txt");
+			await bash.exec("git add lost.txt");
+			await bash.exec('git commit -m "lost"');
+
+			const result = await bash.exec("git switch -q main");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect((await readFile(bash.fs, "/repo/.git/HEAD"))?.trim()).toBe("ref: refs/heads/main");
+		});
+
+		test("silences tracking setup and still configures upstream", async () => {
+			const bash = await setupClonePair();
+			await bash.exec(
+				"cd /remote && git checkout -b feature && echo feat > feat.txt && git add . && git commit -m feat",
+			);
+			await bash.exec("cd /local && git fetch");
+
+			const result = await bash.exec("git switch -q feature", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			const merge = await bash.exec("git config get branch.feature.merge", { cwd: "/local" });
+			expect(merge.stdout).toBe("refs/heads/feature\n");
+
+			const created = await bash.exec("git switch -q -c t2 origin/feature", { cwd: "/local" });
+			expect(created).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			const merge2 = await bash.exec("git config get branch.t2.merge", { cwd: "/local" });
+			expect(merge2.stdout).toBe("refs/heads/feature\n");
+		});
+
+		test("errors still print", async () => {
+			const bash = await setupWithFeature();
+
+			const missing = await bash.exec("git switch -q nope");
+			expect(missing.exitCode).toBe(128);
+			expect(missing.stdout).toBe("");
+			expect(missing.stderr).toBe("fatal: invalid reference: nope\n");
+
+			const exists = await bash.exec("git switch -q -c main");
+			expect(exists.exitCode).toBe(128);
+			expect(exists.stderr).toBe("fatal: a branch named 'main' already exists\n");
+		});
+	});
 });

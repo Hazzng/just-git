@@ -352,4 +352,41 @@ describe("git gc", () => {
 		// Next line should be a peeled hash
 		expect(lines[v2Line + 1]!.startsWith("^")).toBe(true);
 	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: BASIC_REPO });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "first"', { env: TEST_ENV });
+			return bash;
+		}
+
+		test("-q suppresses progress but still packs", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git gc -q");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			const packFiles = await bash.fs.readdir("/repo/.git/objects/pack");
+			expect(packFiles.filter((f) => f.endsWith(".pack")).length).toBe(1);
+			expect(await pathExists(bash.fs, "/repo/.git/packed-refs")).toBe(true);
+		});
+
+		test("--quiet with --aggressive", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git gc --quiet --aggressive");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("--no-quiet after -q restores progress", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git gc -q --no-quiet");
+			expect(result.stderr).toContain("Enumerating objects:");
+		});
+
+		test("errors still print", async () => {
+			const { results } = await runScenario(["git gc -q"]);
+			expect(results[0]!.exitCode).toBe(128);
+			expect(results[0]!.stderr).toContain("not a git repository");
+		});
+	});
 });

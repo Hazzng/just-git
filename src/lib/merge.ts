@@ -291,13 +291,15 @@ export async function handleFastForward(
 	gitCtx: GitContext,
 	headHash: ObjectId,
 	theirsHash: ObjectId,
+	options?: { quiet?: boolean },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	const quiet = options?.quiet ?? false;
 	const headCommit = await readCommit(gitCtx, headHash);
 	const theirsCommit = await readCommit(gitCtx, theirsHash);
 
-	const oldShort = await uniqueAbbrev(gitCtx, headHash);
-	const newShort = await uniqueAbbrev(gitCtx, theirsHash);
-	const updatingLine = `Updating ${oldShort}..${newShort}\n`;
+	const updatingLine = quiet
+		? ""
+		: `Updating ${await uniqueAbbrev(gitCtx, headHash)}..${await uniqueAbbrev(gitCtx, theirsHash)}\n`;
 
 	if (gitCtx.workTree) {
 		const currentIndex = await readIndex(gitCtx);
@@ -319,6 +321,8 @@ export async function handleFastForward(
 	}
 
 	await advanceBranchRef(gitCtx, theirsHash);
+
+	if (quiet) return { stdout: "", stderr: "", exitCode: 0 };
 
 	const diffstat = await formatDiffStat(gitCtx, headCommit.tree, theirsCommit.tree);
 	return {
@@ -344,6 +348,7 @@ export async function squashFastForward(
 	gitCtx: GitContext,
 	headHash: ObjectId,
 	theirsHash: ObjectId,
+	options?: { quiet?: boolean },
 ): Promise<
 	{ ok: true; diffstat: string } | { ok: false; stdout: string; stderr: string; exitCode: number }
 > {
@@ -360,6 +365,8 @@ export async function squashFastForward(
 		await writeIndex(gitCtx, { version: 2, entries: result.newEntries });
 		await applyWorktreeOps(gitCtx, result.worktreeOps);
 	}
+
+	if (options?.quiet) return { ok: true, diffstat: "" };
 
 	const diffstat = await formatDiffStat(gitCtx, headCommit.tree, theirsCommit.tree);
 	return { ok: true, diffstat };

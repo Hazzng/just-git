@@ -241,4 +241,42 @@ describe("git repack", () => {
 		// The old pack should be gone (different name since it covers more objects)
 		// Note: if the pack hash happens to be the same, that's fine too
 	});
+
+	describe("--quiet", () => {
+		async function setup() {
+			const bash = createTestBash({ files: BASIC_REPO });
+			await bash.exec("git init");
+			await bash.exec("git add .");
+			await bash.exec('git commit -m "initial"', { env: TEST_ENV });
+			return bash;
+		}
+
+		test("-q suppresses progress but still packs", async () => {
+			const bash = await setup();
+			const result = await bash.exec("git repack -q -a -d");
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			const packFiles = await bash.fs.readdir("/repo/.git/objects/pack");
+			expect(packFiles.filter((f) => f.endsWith(".pack")).length).toBe(1);
+		});
+
+		test("--quiet suppresses 'Nothing new to pack.'", async () => {
+			const { results } = await runScenario(["git init", "git repack --quiet"], {
+				files: BASIC_REPO,
+			});
+			expect(results[1]).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const { results } = await runScenario(["git init", "git repack -q --no-quiet"], {
+				files: BASIC_REPO,
+			});
+			expect(results[1]!.stdout).toBe("Nothing new to pack.\n");
+		});
+
+		test("errors still print", async () => {
+			const { results } = await runScenario(["git repack -q"]);
+			expect(results[0]!.exitCode).toBe(128);
+			expect(results[0]!.stderr).toContain("not a git repository");
+		});
+	});
 });

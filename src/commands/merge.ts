@@ -8,11 +8,13 @@ import {
 	formatCommitOneLiner,
 	handleOperationAbort,
 	isCommandError,
+	quietFlag,
 	requireAuthor,
 	requireCommitter,
 	requireGitContext,
 	requireHead,
 	requireNoConflicts,
+	requireNoConflictsToCommit,
 	stripCommentLines,
 	uniqueAbbrev,
 	writeCommitAndAdvance,
@@ -45,6 +47,11 @@ import { buildTreeFromIndex } from "../lib/tree-ops.ts";
 import type { GitContext, ObjectId } from "../lib/types.ts";
 import { a, type Command, f, o } from "../parse/index.ts";
 
+const USAGE =
+	"usage: git merge [<options>] [<commit>...]\n" +
+	"   or: git merge --abort\n" +
+	"   or: git merge --continue\n";
+
 export function registerMergeCommand(parent: Command, ext?: GitExtensions) {
 	parent.command("merge", {
 		description: "Join two or more development histories together",
@@ -59,12 +66,33 @@ export function registerMergeCommand(parent: Command, ext?: GitExtensions) {
 			squash: f().describe("Apply merge result to worktree/index without creating a merge commit"),
 			edit: f().describe("Edit the merge message (no-op, accepted for compatibility)"),
 			message: o.string().alias("m").describe("Merge commit message"),
+			quiet: quietFlag("be more quiet"),
 		},
 		transformArgs: (tokens) => tokens.filter((t) => t !== "--ff"),
 		handler: async (args, ctx) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
 			if (isCommandError(gitCtxOrError)) return gitCtxOrError;
 			const gitCtx = gitCtxOrError;
+
+			if (args.abort || args.continue) {
+				const hasOtherArgs =
+					(args.abort && args.continue) ||
+					args.branch !== undefined ||
+					args.noFf ||
+					args.ffOnly ||
+					args.squash ||
+					args.edit ||
+					args.message !== undefined ||
+					args.quiet;
+				if (hasOtherArgs) {
+					const mode = args.abort ? "--abort" : "--continue";
+					return {
+						stdout: "",
+						stderr: `fatal: ${mode} expects no arguments\n\n${USAGE}`,
+						exitCode: 129,
+					};
+				}
+			}
 
 			// ── --abort path ──────────────────────────────────────────
 			if (args.abort) {
@@ -76,6 +104,7 @@ export function registerMergeCommand(parent: Command, ext?: GitExtensions) {
 				return handleContinue(gitCtx, ctx.env, ext);
 			}
 
+			const quiet = !!args.quiet;
 			const branch: string | undefined = args.branch;
 			if (!branch) {
 				return fatal("you must specify a branch to merge");
@@ -145,7 +174,7 @@ export function registerMergeCommand(parent: Command, ext?: GitExtensions) {
 				await deleteStateFile(gitCtx, "MERGE_MSG");
 				const suffix = args.squash ? " (nothing to squash)" : "";
 				return {
-					stdout: `Already up to date.${suffix}\n`,
+					stdout: quiet ? "" : `Already up to date.${suffix}\n`,
 					stderr: "",
 					exitCode: 0,
 				};
@@ -182,7 +211,7 @@ export function registerMergeCommand(parent: Command, ext?: GitExtensions) {
 
 			if (isFastForward && !args.squash) {
 				const head = await readHead(gitCtx);
-				const result = await handleFastForward(gitCtx, headHash, theirsHash);
+				const result = await handleFastForward(gitCtx, headHash, theirsHash, { quiet });
 				if (result.exitCode === 0 && args.message) {
 					result.stdout = result.stdout.replace(
 						/^Fast-forward$/m,
@@ -220,7 +249,16 @@ export function registerMergeCommand(parent: Command, ext?: GitExtensions) {
 				: undefined;
 
 			if (args.squash) {
-				return handleSquashMerge(gitCtx, headHash, theirsHash, branch, ctx.env, ext, customMessage);
+				return handleSquashMerge(
+					gitCtx,
+					headHash,
+					theirsHash,
+					branch,
+					ctx.env,
+					ext,
+					customMessage,
+					quiet,
+				);
 			}
 
 			return handleThreeWayMerge(
@@ -232,6 +270,7 @@ export function registerMergeCommand(parent: Command, ext?: GitExtensions) {
 				noFf,
 				ext,
 				customMessage,
+				quiet,
 			);
 		},
 	});
@@ -248,6 +287,7 @@ async function handleThreeWayMerge(
 	noFf = false,
 	ext?: GitExtensions,
 	customMessage?: string,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const headCommit = await readCommit(gitCtx, headHash);
 
@@ -381,10 +421,13 @@ async function handleThreeWayMerge(
 		commitHash,
 	});
 
-	const diffstat = await formatDiffStat(gitCtx, headCommit.tree, treeHash);
+	// merge-ort's per-path messages (e.g. "Auto-merging") still print under -q.
 	const mergeMessages = result.messages.length > 0 ? `${result.messages.join("\n")}\n` : "";
+	const summary = quiet
+		? ""
+		: `Merge made by the 'ort' strategy.\n${await formatDiffStat(gitCtx, headCommit.tree, treeHash)}`;
 	return {
-		stdout: `${mergeMessages}Merge made by the 'ort' strategy.\n${diffstat}`,
+		stdout: `${mergeMessages}${summary}`,
 		stderr: renameWarning,
 		exitCode: 0,
 	};
@@ -428,6 +471,7 @@ async function handleSquashMerge(
 	env: Map<string, string>,
 	_ext?: GitExtensions,
 	customMessage?: string,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const headCommit = await readCommit(gitCtx, headHash);
 	const head = await readHead(gitCtx);
@@ -441,19 +485,24 @@ async function handleSquashMerge(
 	// moved. Routing it through the 3-way path below would discard local
 	// modifications and diff against the merged tree instead.
 	if (isFF) {
-		const ffPrefix = `Updating ${await uniqueAbbrev(gitCtx, headHash)}..${await uniqueAbbrev(gitCtx, theirsHash)}\n`;
-		const ff = await squashFastForward(gitCtx, headHash, theirsHash);
+		const ffPrefix = quiet
+			? ""
+			: `Updating ${await uniqueAbbrev(gitCtx, headHash)}..${await uniqueAbbrev(gitCtx, theirsHash)}\n`;
+		const ff = await squashFastForward(gitCtx, headHash, theirsHash, { quiet });
 		if (!ff.ok) {
 			await deleteStateFile(gitCtx, "MERGE_MSG");
 			return { stdout: ffPrefix + ff.stdout, stderr: ff.stderr, exitCode: ff.exitCode };
 		}
 		const ffLog = await buildSquashMessageLog(gitCtx, headHash, theirsHash);
 		await writeStateFile(gitCtx, "SQUASH_MSG", `Squashed commit of the following:\n\n${ffLog}`);
-		const ffLabel = customMessage
-			? "Fast-forward (no commit created; -m option ignored)"
-			: "Fast-forward";
+		// "Squash commit -- not updating HEAD" still prints under -q.
+		const ffLabel = quiet
+			? ""
+			: customMessage
+				? "Fast-forward (no commit created; -m option ignored)\n"
+				: "Fast-forward\n";
 		return {
-			stdout: `${ffPrefix}${ffLabel}\nSquash commit -- not updating HEAD\n${ff.diffstat}`,
+			stdout: `${ffPrefix}${ffLabel}Squash commit -- not updating HEAD\n${ff.diffstat}`,
 			stderr: "",
 			exitCode: 0,
 		};
@@ -539,7 +588,7 @@ async function handleContinue(
 
 	const index = await readIndex(gitCtx);
 
-	const conflictErr = requireNoConflicts(index, "Committing");
+	const conflictErr = requireNoConflictsToCommit(index);
 	if (conflictErr) return conflictErr;
 
 	const headHash = await requireHead(gitCtx);

@@ -3,6 +3,7 @@ import {
 	fatal,
 	getCwdPrefix,
 	isCommandError,
+	quietFlag,
 	requireGitContext,
 	requireRevision,
 } from "../lib/command-utils.ts";
@@ -108,7 +109,7 @@ export function registerGrepCommand(parent: Command, ext?: GitExtensions) {
 			suppressFilename: f().alias("h").describe("Suppress filename prefix"),
 			forceFilename: f().alias("H").describe("Force filename prefix"),
 			fullName: f().describe("Force paths to be output relative to project top"),
-			quiet: f().alias("q").describe("Do not output matched lines; exit with status 0 on match"),
+			quiet: quietFlag("Do not output matched lines; exit with status 0 on match"),
 			allMatch: f().describe("Require all patterns to match in a file"),
 			maxDepth: o.number().describe("Descend at most <n> levels of directories"),
 			maxCount: o.number().alias("m").describe("Maximum number of matches per file"),

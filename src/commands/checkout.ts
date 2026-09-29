@@ -16,6 +16,7 @@ import {
 	fatal,
 	getCwdPrefix,
 	isCommandError,
+	quietFlag,
 	requireCommit,
 	requireGitContext,
 } from "../lib/command-utils.ts";
@@ -58,6 +59,7 @@ export function registerCheckoutCommand(parent: Command, ext?: GitExtensions) {
 			ours: f().describe("Checkout our version for unmerged files"),
 			theirs: f().describe("Checkout their version for unmerged files"),
 			ignoreOtherWorktrees: f().describe("Allow checking out a branch used by another worktree"),
+			quiet: quietFlag("suppress progress reporting"),
 		},
 		handler: async (args, ctx, meta) => {
 			const gitCtxOrError = await requireGitContext(ctx.fs, ctx.cwd, ext);
@@ -65,6 +67,7 @@ export function registerCheckoutCommand(parent: Command, ext?: GitExtensions) {
 			const gitCtx = gitCtxOrError;
 
 			const target: string | undefined = args.target;
+			const quiet = !!args.quiet;
 
 			if (args.ours && args.theirs) {
 				return fatal("--ours and --theirs are incompatible");
@@ -113,7 +116,7 @@ export function registerCheckoutCommand(parent: Command, ext?: GitExtensions) {
 				if (!target) {
 					return fatal("you must specify a branch to checkout");
 				}
-				return createOrphanBranch(gitCtx, target, ctx.env, ext);
+				return createOrphanBranch(gitCtx, target, ctx.env, ext, quiet);
 			}
 
 			// ── Detach HEAD (--detach) ─────────────────────────────────
@@ -121,7 +124,7 @@ export function registerCheckoutCommand(parent: Command, ext?: GitExtensions) {
 				const rev = target ?? "HEAD";
 				const result = await requireCommit(gitCtx, rev, `invalid reference: ${rev}`);
 				if (isCommandError(result)) return result;
-				return detachHead(gitCtx, rev, result.hash, ctx.env, ext);
+				return detachHead(gitCtx, rev, result.hash, ctx.env, ext, quiet);
 			}
 
 			// ── Create + switch (-b / -B) ───────────────────────────────
@@ -135,6 +138,7 @@ export function registerCheckoutCommand(parent: Command, ext?: GitExtensions) {
 					ext,
 					!!args.forceBranch,
 					!!args.ignoreOtherWorktrees,
+					quiet,
 				);
 			}
 
@@ -144,7 +148,7 @@ export function registerCheckoutCommand(parent: Command, ext?: GitExtensions) {
 
 			// ── "-" shorthand for previous branch ───────────────────────
 			if (target === "-") {
-				return checkoutPrevious(gitCtx, ctx.env, ext);
+				return checkoutPrevious(gitCtx, ctx.env, ext, quiet);
 			}
 
 			// ── Try as branch first ─────────────────────────────────────
@@ -156,20 +160,20 @@ export function registerCheckoutCommand(parent: Command, ext?: GitExtensions) {
 					const usedAt = await branchCheckedOutAt(gitCtx, refName, gitCtx.gitDir);
 					if (usedAt) return fatal(`'${target}' is already used by worktree at '${usedAt}'`);
 				}
-				return switchBranch(gitCtx, target, refName, branchHash, ctx.env, ext);
+				return switchBranch(gitCtx, target, refName, branchHash, ctx.env, ext, quiet);
 			}
 
 			// ── DWIM: guess from remote tracking refs ───────────────────
 			const guessed = await guessRemoteBranch(gitCtx, target);
 			if (guessed) {
-				return createAndSwitchFromRemote(gitCtx, target, guessed.trackingRef, ctx.env, ext);
+				return createAndSwitchFromRemote(gitCtx, target, guessed.trackingRef, ctx.env, ext, quiet);
 			}
 
 			// ── Try as detached HEAD (commit hash, tag, etc.) ──────────
 			const detachedHash = await resolveRevision(gitCtx, target);
 			if (detachedHash) {
 				const commitHash = await peelToCommit(gitCtx, detachedHash);
-				return detachHead(gitCtx, target, commitHash, ctx.env, ext);
+				return detachHead(gitCtx, target, commitHash, ctx.env, ext, quiet);
 			}
 
 			// ── Fall back to file restoration from index ────────────────
@@ -199,10 +203,11 @@ async function checkoutPrevious(
 	gitCtx: GitContext,
 	env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const prev = await findPreviousBranch(gitCtx);
 	if (!prev) return fatal("no previous branch");
-	return switchBranch(gitCtx, prev.name, prev.refName, prev.hash, env, ext);
+	return switchBranch(gitCtx, prev.name, prev.refName, prev.hash, env, ext, quiet);
 }
 
 /**
@@ -215,6 +220,7 @@ async function createOrphanBranch(
 	branchName: string,
 	_env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	if (!isValidBranchName(branchName)) {
 		return fatal(`'${branchName}' is not a valid branch name`);
@@ -239,7 +245,7 @@ async function createOrphanBranch(
 
 	await createSymbolicRef(gitCtx, "HEAD", refName);
 	await clearDetachPoint(gitCtx);
-	const opWarning = await clearOperationState(gitCtx);
+	const opWarning = await clearOperationState(gitCtx, quiet);
 
 	await ext?.hooks?.postCheckout?.({
 		repo: gitCtx,
@@ -247,6 +253,8 @@ async function createOrphanBranch(
 		newHead: ZERO_HASH,
 		isBranchCheckout: true,
 	});
+
+	if (quiet) return { stdout: "", stderr: "", exitCode: 0 };
 
 	let stdout = "";
 	if (prevTree) {
@@ -271,6 +279,7 @@ async function createAndSwitch(
 	ext?: GitExtensions,
 	force = false,
 	ignoreOtherWorktrees = false,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	if (!isValidBranchName(branchName)) {
 		return fatal(`'${branchName}' is not a valid branch name`);
@@ -307,7 +316,9 @@ async function createAndSwitch(
 		targetHash = headHash;
 	}
 
-	if (force || startPoint) {
+	// `checkout -b` at HEAD skips the index merge, and with it the unmerged
+	// check, unless -q is given (`switch -q -c` still skips it).
+	if (force || startPoint || quiet) {
 		const currentIndex = await readIndex(gitCtx);
 		const conflictErr = requireResolvedIndex(currentIndex);
 		if (conflictErr) return conflictErr;
@@ -341,7 +352,7 @@ async function createAndSwitch(
 
 	await createSymbolicRef(gitCtx, "HEAD", refName);
 	await clearDetachPoint(gitCtx);
-	const opWarning = await clearOperationState(gitCtx);
+	const opWarning = await clearOperationState(gitCtx, quiet);
 
 	const fromName =
 		head?.type === "symbolic" ? head.target.replace(/^refs\/heads\//, "") : (headHash ?? ZERO_HASH);
@@ -370,6 +381,8 @@ async function createAndSwitch(
 		newHead: targetHash ?? ZERO_HASH,
 		isBranchCheckout: true,
 	});
+
+	if (quiet) return { stdout: "", stderr: "", exitCode: 0 };
 
 	let stdout = "";
 	if ((force || startPoint) && targetHash) {
@@ -407,6 +420,7 @@ async function switchBranch(
 	targetHash: ObjectId,
 	env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const rej = await ext?.hooks?.preCheckout?.({
 		repo: gitCtx,
@@ -414,7 +428,7 @@ async function switchBranch(
 		mode: "switch",
 	});
 	if (isRejection(rej)) return err(rej.message ?? "");
-	return switchBranchCore(gitCtx, branchName, refName, targetHash, env, ext);
+	return switchBranchCore(gitCtx, branchName, refName, targetHash, env, ext, { quiet });
 }
 
 /**
@@ -426,6 +440,7 @@ async function createAndSwitchFromRemote(
 	trackingRef: string,
 	env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const rej = await ext?.hooks?.preCheckout?.({
 		repo: gitCtx,
@@ -458,7 +473,9 @@ async function createAndSwitchFromRemote(
 
 	const result = await switchBranchCore(gitCtx, branchName, refName, targetHash, env, ext, {
 		isNew: true,
+		quiet,
 	});
+	if (quiet) return result;
 
 	const trackBranch = trackingParts.slice(1).join("/");
 	result.stdout = `branch '${branchName}' set up to track '${remote}/${trackBranch}'.\n`;
@@ -475,6 +492,7 @@ async function detachHead(
 	targetHash: ObjectId,
 	env: Map<string, string>,
 	ext?: GitExtensions,
+	quiet = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const rej = await ext?.hooks?.preCheckout?.({
 		repo: gitCtx,
@@ -484,5 +502,6 @@ async function detachHead(
 	if (isRejection(rej)) return err(rej.message ?? "");
 	return detachHeadCore(gitCtx, targetHash, env, ext, {
 		detachAdviceTarget: target,
+		quiet,
 	});
 }

@@ -1,5 +1,6 @@
 import type { FileSystem } from "../fs.ts";
 import type { GitExtensions } from "../git.ts";
+import { f } from "../parse/index.ts";
 import { getAuthor, getCommitter } from "./identity.ts";
 import { hasConflicts, readIndex, writeIndex } from "./index.ts";
 import { findObjectsByPrefix, peelToCommit, readCommit, writeObject } from "./object-db.ts";
@@ -18,6 +19,15 @@ export interface CommandResult {
 	stdout: string;
 	stderr: string;
 	exitCode: number;
+}
+
+/**
+ * The `-q, --quiet` flag. Declared per command because git only accepts it on
+ * some commands, and what it suppresses (or whether it changes exit codes)
+ * differs per command — each handler implements its own semantics.
+ */
+export function quietFlag(description: string) {
+	return f().alias("q").describe(description);
 }
 
 export function fatal(msg: string): CommandResult {
@@ -120,6 +130,18 @@ export function requireNoConflicts(
 			fatalLine,
 		128,
 	);
+}
+
+/**
+ * `requireNoConflicts` for paths that go through git's commit step (`commit`
+ * and the merge/cherry-pick/revert `--continue` modes), which also list the
+ * unmerged paths on stdout.
+ */
+export function requireNoConflictsToCommit(index: Index): CommandResult | null {
+	const conflictErr = requireNoConflicts(index, "Committing");
+	if (!conflictErr) return null;
+	const unmerged = [...new Set(index.entries.filter((e) => e.stage > 0).map((e) => e.path))].sort();
+	return { ...conflictErr, stdout: unmerged.map((p) => `U\t${p}\n`).join("") };
 }
 
 /**

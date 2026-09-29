@@ -94,9 +94,13 @@ export async function findPreviousBranch(
 /**
  * Clear merge/cherry-pick operation state after a successful checkout.
  * Real git clears these when switching branches.
- * Returns a warning string if a cherry-pick was cancelled.
+ * Returns a warning string if a cherry-pick was cancelled (empty when `quiet`).
  */
-export async function clearOperationState(gitCtx: GitContext): Promise<string> {
+export async function clearOperationState(gitCtx: GitContext, quiet = false): Promise<string> {
+	if (quiet) {
+		await clearAllOperationState(gitCtx);
+		return "";
+	}
 	let warning = "";
 	const cpHead = await resolveRef(gitCtx, "CHERRY_PICK_HEAD");
 	if (cpHead) {
@@ -112,9 +116,9 @@ export async function clearOperationState(gitCtx: GitContext): Promise<string> {
 
 /**
  * Build the "<path>: needs merge" file list that real git prints to
- * stdout when checkout is blocked by unmerged index entries.
+ * stdout for unmerged index entries (blocked checkout, quiet index refresh).
  */
-function formatUnmergedList(index: { entries: { path: string; stage: number }[] }): string {
+export function formatUnmergedList(index: { entries: { path: string; stage: number }[] }): string {
 	const seen = new Set<string>();
 	const lines: string[] = [];
 	for (const e of index.entries) {
@@ -448,13 +452,14 @@ export async function switchBranchCore(
 	targetHash: ObjectId,
 	env: Map<string, string>,
 	ext?: GitExtensions,
-	opts?: { isNew?: boolean },
+	opts?: { isNew?: boolean; quiet?: boolean },
 ): Promise<CommandResult> {
+	const quiet = opts?.quiet ?? false;
 	const head = await readHead(gitCtx);
 	if (head?.type === "symbolic" && head.target === refName) {
 		return {
 			stdout: "",
-			stderr: `Already on '${branchName}'\n`,
+			stderr: quiet ? "" : `Already on '${branchName}'\n`,
 			exitCode: 0,
 		};
 	}
@@ -484,7 +489,7 @@ export async function switchBranchCore(
 	}
 
 	let detachPreamble = "";
-	if (head?.type === "direct" && currentHash) {
+	if (!quiet && head?.type === "direct" && currentHash) {
 		detachPreamble = await buildDetachPreamble(gitCtx, currentHash, targetHash);
 	}
 
@@ -494,7 +499,7 @@ export async function switchBranchCore(
 			: (currentHash ?? ZERO_HASH);
 	await createSymbolicRef(gitCtx, "HEAD", refName);
 	await clearDetachPoint(gitCtx);
-	const opWarning = await clearOperationState(gitCtx);
+	const opWarning = await clearOperationState(gitCtx, quiet);
 
 	await logRef(
 		gitCtx,
@@ -511,6 +516,8 @@ export async function switchBranchCore(
 		newHead: targetHash,
 		isBranchCheckout: true,
 	});
+
+	if (quiet) return { stdout: "", stderr: "", exitCode: 0 };
 
 	let stdout = await formatCheckoutSummary(gitCtx, targetTree, currentIndex);
 
@@ -543,8 +550,10 @@ export async function detachHeadCore(
 	ext?: GitExtensions,
 	opts?: {
 		detachAdviceTarget?: string;
+		quiet?: boolean;
 	},
 ): Promise<CommandResult> {
+	const quiet = opts?.quiet ?? false;
 	let currentIndex = await readIndex(gitCtx);
 	const conflictErr = requireResolvedIndex(currentIndex);
 	if (conflictErr) return conflictErr;
@@ -588,7 +597,7 @@ export async function detachHeadCore(
 			`checkout: moving from ${fromName} to ${targetHash}`,
 		);
 	}
-	const opWarning = await clearOperationState(gitCtx);
+	const opWarning = await clearOperationState(gitCtx, quiet);
 
 	await ext?.hooks?.postCheckout?.({
 		repo: gitCtx,
@@ -596,6 +605,8 @@ export async function detachHeadCore(
 		newHead: targetHash,
 		isBranchCheckout: false,
 	});
+
+	if (quiet) return { stdout: "", stderr: "", exitCode: 0 };
 
 	const shortHash = await uniqueAbbrev(gitCtx, targetHash);
 	const subject = firstLine(targetCommit.message);

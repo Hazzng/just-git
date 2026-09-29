@@ -296,6 +296,7 @@ Options:
   --show-current                  Print the current branch name
   -u, --set-upstream-to <string>  Set upstream tracking branch
   -v, --verbose                   Show hash and subject (counted)
+  -q, --quiet                     suppress informational messages
 ```
 
 ## git checkout
@@ -317,6 +318,7 @@ Options:
   --ours                       Checkout our version for unmerged files
   --theirs                     Checkout their version for unmerged files
   --ignore-other-worktrees     Allow checking out a branch used by another worktree
+  -q, --quiet                  suppress progress reporting
 ```
 
 ## git cherry-pick
@@ -357,6 +359,7 @@ Options:
   -x, --remove-ignored    Remove ignored files as well
   -X, --only-ignored      Remove only ignored files
   -e, --exclude <string>  Additional exclude pattern
+  -q, --quiet             do not print names of files removed
 ```
 
 ## git clone
@@ -379,6 +382,7 @@ Options:
   --no-single-branch     Clone all branches even with --depth
   --no-tags              Don't clone any tags
   -n, --no-checkout      Don't create a checkout
+  -q, --quiet            be more quiet
 ```
 
 ## git commit
@@ -396,7 +400,7 @@ Options:
   --amend                 Amend the previous commit
   --no-edit               Use the previous commit message without editing
   -a, --all               Auto-stage modified and deleted tracked files
-  -q, --quiet             Suppress commit summary
+  -q, --quiet             suppress summary after successful commit
 ```
 
 ## git config
@@ -486,6 +490,7 @@ Options:
   --tags            Also fetch tags
   --depth <number>  Limit fetching to the specified number of commits
   --unshallow       Convert a shallow repository to a complete one
+  -q, --quiet       be more quiet
 ```
 
 ## git gc
@@ -498,6 +503,7 @@ Usage:
 
 Options:
   --aggressive  More aggressively optimize the repository
+  -q, --quiet   suppress progress reporting
 ```
 
 ## git grep
@@ -564,6 +570,7 @@ Arguments:
 Options:
   --bare                         Create a bare repository
   -b, --initial-branch <string>  Name for the initial branch
+  -q, --quiet                    be quiet
 
 Examples:
   git init
@@ -602,6 +609,7 @@ Options:
   --name-only               Show only names of changed files
   --shortstat               Show only the shortstat summary line
   --numstat                 Machine-readable insertions/deletions per file
+  -q, --quiet               suppress diff output
   --graph                   Draw text-based graph of the commit history
   --first-parent            Follow only the first parent of merge commits
   --skip <number>           Skip number of commits before starting to show output
@@ -650,6 +658,7 @@ Options:
   --squash                Apply merge result to worktree/index without creating a merge commit
   --edit                  Edit the merge message (no-op, accepted for compatibility)
   -m, --message <string>  Merge commit message
+  -q, --quiet             be more quiet
 ```
 
 ## git mv
@@ -688,6 +697,7 @@ Options:
   --no-ff           Create a merge commit even for fast-forwards
   --depth <number>  Limit fetching to the specified number of commits
   --unshallow       Convert a shallow repository to a complete one
+  -q, --quiet       be more quiet
 ```
 
 ## git push
@@ -708,6 +718,7 @@ Options:
   --all               Push all branches
   -d, --delete        Delete remote refs
   --tags              Push all tags
+  -q, --quiet         be more quiet
 ```
 
 ## git rebase
@@ -728,6 +739,7 @@ Options:
   --skip                     Skip the current patch and continue
   --reapply-cherry-picks     Do not skip commits that are cherry-pick equivalents
   --no-reapply-cherry-picks  Skip commits that are cherry-pick equivalents (default)
+  -q, --quiet                be quiet. implies --no-stat
 ```
 
 ## git reflog
@@ -851,6 +863,7 @@ Usage:
 Options:
   -a, --all     Pack all objects, including already-packed
   -d, --delete  After packing, remove redundant packs and loose objects
+  -q, --quiet   be quiet
 ```
 
 ## git reset
@@ -865,9 +878,10 @@ Arguments:
   args...
 
 Options:
-  --soft   Only move HEAD
-  --mixed  Move HEAD and reset index (default)
-  --hard   Move HEAD, reset index, and reset working tree
+  --soft       Only move HEAD
+  --mixed      Move HEAD and reset index (default)
+  --hard       Move HEAD, reset index, and reset working tree
+  -q, --quiet  be quiet, only report errors
 ```
 
 ## git restore
@@ -887,6 +901,7 @@ Options:
   -W, --worktree         Restore the working tree (default)
   --ours                 Checkout our version for unmerged files
   --theirs               Checkout their version for unmerged files
+  -q, --quiet            suppress progress reporting
 ```
 
 ## git rev-parse
@@ -911,6 +926,7 @@ Options:
   --is-bare-repository   Output whether the repository is bare
   --show-prefix          Show path of cwd relative to top-level directory
   --show-cdup            Show relative path from cwd up to top-level directory
+  -q, --quiet            With --verify, exit non-zero silently instead of erroring on an invalid object name
 ```
 
 ## git revert
@@ -949,6 +965,7 @@ Options:
   -r, --recursive  Allow recursive removal when a directory name is given
   -f, --force      Override the up-to-date check
   -n, --dry-run    Don't actually remove any file(s)
+  -q, --quiet      do not list removed files
 ```
 
 ## git shortlog
@@ -992,6 +1009,7 @@ Arguments:
 Options:
   -p, --patch        Show diff in patch format
   --no-patch         Suppress diff output
+  -q, --quiet        suppress diff output
   --stat             Show diffstat summary
   --name-only        Show only names of changed files
   --name-status      Show names and status of changed files
@@ -1007,7 +1025,7 @@ Options:
 git stash - Stash the changes in a dirty working directory away
 
 Usage:
-  git stash <command> [options]
+  git stash <command> [options] [args...]
 
 Commands:
   push   Save your local modifications to a new stash entry
@@ -1018,9 +1036,13 @@ Commands:
   show   Show the changes recorded in a stash entry as a diff
   clear  Remove all the stash entries
 
+Arguments:
+  args...
+
 Options:
   -m, --message <string>   Stash message
   -u, --include-untracked  Also stash untracked files
+  -q, --quiet              quiet mode
 ```
 
 ### git stash apply
@@ -1029,10 +1051,13 @@ Options:
 git stash apply - Apply a stash entry on top of the current working tree
 
 Usage:
-  git stash apply [stash]
+  git stash apply [options] [stash]
 
 Arguments:
   stash  Stash reference (e.g. stash@{0})
+
+Options:
+  -q, --quiet  be quiet, only report errors
 ```
 
 ### git stash clear
@@ -1050,10 +1075,13 @@ Usage:
 git stash drop - Remove a single stash entry from the list of stash entries
 
 Usage:
-  git stash drop [stash]
+  git stash drop [options] [stash]
 
 Arguments:
   stash  Stash reference (e.g. stash@{0})
+
+Options:
+  -q, --quiet  be quiet, only report errors
 ```
 
 ### git stash list
@@ -1071,10 +1099,13 @@ Usage:
 git stash pop - Remove a single stash entry and apply it on top of the current working tree
 
 Usage:
-  git stash pop [stash]
+  git stash pop [options] [stash]
 
 Arguments:
   stash  Stash reference (e.g. stash@{0})
+
+Options:
+  -q, --quiet  be quiet, only report errors
 ```
 
 ### git stash push
@@ -1088,6 +1119,7 @@ Usage:
 Options:
   -m, --message <string>   Stash message
   -u, --include-untracked  Also stash untracked files
+  -q, --quiet              quiet mode
 ```
 
 ### git stash show
@@ -1138,6 +1170,7 @@ Options:
   --orphan <string>            Create a new orphan branch
   --guess                      Guess branch from remote tracking (default: true)
   --ignore-other-worktrees     Allow checking out a branch used by another worktree
+  -q, --quiet                  suppress progress reporting
 ```
 
 ## git tag

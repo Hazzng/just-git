@@ -462,4 +462,111 @@ describe("git push", () => {
 			expect(result.stderr).toContain("SSH transport is not supported");
 		});
 	});
+
+	describe("--quiet", () => {
+		const NON_FF_HINT =
+			"hint: Updates were rejected because the tip of your current branch is behind\n" +
+			"hint: its remote counterpart. If you want to integrate the remote changes,\n" +
+			"hint: use 'git pull' before pushing again.\n" +
+			"hint: See the 'Note about fast-forwards' in 'git push --help' for details.\n";
+
+		test("-q is silent on success and still pushes", async () => {
+			const bash = await setupClonePair();
+			await bash.exec("cd /local && echo v2 > README.md && git add . && git commit -m update");
+
+			const result = await bash.exec("git push -q", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await readFile(bash.fs, "/remote/.git/refs/heads/main")).toBe(
+				await readFile(bash.fs, "/local/.git/refs/heads/main"),
+			);
+		});
+
+		test("--quiet suppresses 'Everything up-to-date'", async () => {
+			const bash = await setupClonePair();
+			const result = await bash.exec("git push --quiet", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("-q -u suppresses the tracking message but writes config", async () => {
+			const bash = await setupClonePair();
+			await bash.exec(
+				"cd /local && git checkout -b feature && echo f > f.txt && git add . && git commit -m f",
+			);
+
+			const result = await bash.exec("git push -q -u origin feature", { cwd: "/local" });
+			expect(result).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/remote/.git/refs/heads/feature")).toBe(true);
+			const config = await readFile(bash.fs, "/local/.git/config");
+			expect(config).toContain('[branch "feature"]');
+
+			const again = await bash.exec("git push -q -u origin feature", { cwd: "/local" });
+			expect(again).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+		});
+
+		test("-q is silent for --tags and --delete", async () => {
+			const bash = await setupClonePair();
+			await bash.exec("cd /local && git tag v1.0");
+
+			const pushTags = await bash.exec("git push -q --tags", { cwd: "/local" });
+			expect(pushTags).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/remote/.git/refs/tags/v1.0")).toBe(true);
+
+			const del = await bash.exec("git push -q --delete origin v1.0", { cwd: "/local" });
+			expect(del).toMatchObject({ stdout: "", stderr: "", exitCode: 0 });
+			expect(await pathExists(bash.fs, "/remote/.git/refs/tags/v1.0")).toBe(false);
+		});
+
+		test("-q still prints the full ref table, error, and hints on rejection", async () => {
+			const bash = await setupClonePair();
+			await bash.exec("cd /remote && echo remote > r.txt && git add . && git commit -m remote");
+			await bash.exec("cd /local && echo local > l.txt && git add . && git commit -m local");
+			await bash.exec("cd /local && git branch side && git fetch -q");
+
+			const result = await bash.exec("git push -q origin main side", { cwd: "/local" });
+			expect(result).toMatchObject({
+				stdout: "",
+				stderr:
+					"To /remote\n" +
+					" * [new branch]      side -> side\n" +
+					" ! [rejected]        main -> main (non-fast-forward)\n" +
+					"error: failed to push some refs to '/remote'\n" +
+					NON_FF_HINT,
+				exitCode: 1,
+			});
+			expect(await pathExists(bash.fs, "/remote/.git/refs/heads/side")).toBe(true);
+		});
+
+		test("-q still reports errors", async () => {
+			const bash = await setupClonePair();
+			const missingSrc = await bash.exec("git push -q origin nosuch", { cwd: "/local" });
+			expect(missingSrc).toMatchObject({
+				stdout: "",
+				stderr:
+					"error: src refspec nosuch does not match any\n" +
+					"error: failed to push some refs to '/remote'\n",
+				exitCode: 1,
+			});
+
+			const missingDelete = await bash.exec("git push -q --delete origin nosuch", {
+				cwd: "/local",
+			});
+			expect(missingDelete).toMatchObject({
+				stdout: "",
+				stderr:
+					"error: unable to delete 'nosuch': remote ref does not exist\n" +
+					"error: failed to push some refs to '/remote'\n",
+				exitCode: 1,
+			});
+		});
+
+		test("--no-quiet after -q restores output", async () => {
+			const bash = await setupClonePair();
+			const result = await bash.exec("git push -q --no-quiet", { cwd: "/local" });
+			expect(result).toMatchObject({
+				stdout: "",
+				stderr: "Everything up-to-date\n",
+				exitCode: 0,
+			});
+		});
+	});
 });

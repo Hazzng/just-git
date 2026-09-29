@@ -155,6 +155,7 @@ async function captureOperation(gitDir: string): Promise<OperationState> {
 				["head-name", await safeReadFile(`${dirPath}/head-name`)],
 				["orig-head", await safeReadFile(`${dirPath}/orig-head`)],
 				["onto", await safeReadFile(`${dirPath}/onto`)],
+				["quiet", await safeReadFile(`${dirPath}/quiet`)],
 				["REBASE_HEAD", await safeReadFile(`${gitDir}/REBASE_HEAD`)],
 				["MERGE_MSG", await safeReadFile(`${gitDir}/MERGE_MSG`)],
 			];

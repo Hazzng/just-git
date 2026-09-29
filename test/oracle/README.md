@@ -60,9 +60,9 @@ bun oracle generate [name] --seeds <spec> [options]
 
 If no name is given, defaults to the preset name.
 
-**Presets:** `default`, `basic`, `core`, `rebase-heavy`, `merge-heavy`, `cherry-pick-heavy`, `no-rename-show`, `no-show`, `wide-files`, `chaos`, `chaos-heavy`, `clone-cannoli`, `clone-core`, `fuzz-light`, `fuzz-heavy`, `chaos-fuzz`, `gitignore`, `kitchen`, `stress`, `remote`, `remote-core`, `remote-heavy`
+**Presets:** `default`, `basic`, `core`, `rebase-heavy`, `merge-heavy`, `cherry-pick-heavy`, `no-rename-show`, `no-show`, `wide-files`, `chaos`, `chaos-heavy`, `clone-cannoli`, `clone-core`, `fuzz-light`, `fuzz-heavy`, `chaos-fuzz`, `gitignore`, `kitchen`, `stress`, `remote`, `remote-core`, `remote-heavy`, `quiet`, `remote-quiet`
 
-Each preset adjusts which random actions are enabled and their weight multipliers. The `-heavy` variants boost the weight of their respective operations. `core` focuses on ~60 daily-use actions with light chaos (5%) and fuzz (3%). `no-rename-show` excludes `mvFile` and `showHead` actions. `no-show` excludes only `showHead` (allows renames via `mvFile`). `chaos` / `chaos-heavy` set a `chaosRate` to bypass soft preconditions on a percentage of steps. `fuzz-*` presets inject wrong values (non-existent branches, files, commits) to exercise error handling. `clone-cannoli` / `clone-core` clone from a remote repo instead of `git init` (requires network). `kitchen` combines chaos, light fuzz, and gitignore generation. `stress` builds very large repos for performance profiling (best with `--steps 2000` or more). `remote` / `remote-core` / `remote-heavy` spin up a just-git HTTP server as a remote and exercise push/fetch/pull alongside normal operations (see [Remote presets](#remote-presets) below).
+Each preset adjusts which random actions are enabled and their weight multipliers. The `-heavy` variants boost the weight of their respective operations. `core` focuses on ~60 daily-use actions with light chaos (5%) and fuzz (3%). `no-rename-show` excludes `mvFile` and `showHead` actions. `no-show` excludes only `showHead` (allows renames via `mvFile`). `chaos` / `chaos-heavy` set a `chaosRate` to bypass soft preconditions on a percentage of steps. `fuzz-*` presets inject wrong values (non-existent branches, files, commits) to exercise error handling. `clone-cannoli` / `clone-core` clone from a remote repo instead of `git init` (requires network). `kitchen` combines chaos, light fuzz, and gitignore generation. `stress` builds very large repos for performance profiling (best with `--steps 2000` or more). `remote` / `remote-core` / `remote-heavy` spin up a just-git HTTP server as a remote and exercise push/fetch/pull alongside normal operations (see [Remote presets](#remote-presets) below). `quiet` / `remote-quiet` inject `-q`/`--quiet` into recorded commands (see [Quiet presets](#quiet-presets) below).
 
 ```bash
 # Uses preset name as db name → data/rebase-heavy/traces.sqlite
@@ -89,6 +89,25 @@ The server uses `MemoryStorage` with `autoCreate: true` and is reset between tra
 ```bash
 bun oracle generate remote-core --seeds 1-10 --steps 200
 bun oracle test remote-core
+```
+
+#### Quiet presets
+
+The `quiet` and `remote-quiet` presets exercise `-q`/`--quiet` without dedicated actions. `RecordingHarness` passes each walker command through `QuietInjector` (`quiet.ts`) before running it against real git, so the rewritten string is what gets recorded and replayed.
+
+- **Accepted placements** (35% of eligible commands): right after the subcommand (`git commit -q -m ...`, `git push --quiet origin main`), or after the verb for `stash` and `worktree add` (`git stash pop -q`). Continuation modes (`merge`/`rebase --continue|--abort|--skip`) are never quieted here, so a plain `rebase --continue` after `rebase -q` tests the persisted `rebase-merge/quiet` state.
+- **Misplaced placements** (3%): where git rejects the flag — `add`, `status`, `tag`, `mv` (exit 129 unknown switch), continuation modes (exit 129 usage), and `git stash -q pop` (fatal 128). Bare `git tag` is exempt because it is the tag picker's listing query. `cherry-pick`/`revert` are excluded: they forward unknown flags to revision parsing, so the outcome depends on the commit argument.
+
+Injection uses its own RNG (derived from the trace seed) and is disabled during fixed trace setup other than `init`/`clone`. The rebase operation-state hash includes the `quiet` file, so a lost or spurious quiet flag shows up as an `operation_state_hash` warning; it becomes an error on the next `rebase --continue`/`--skip`, whose progress and success output then differ. `gc`/`repack` stderr is skipped by the checker, so quieting them only checks exit code and state.
+
+| Preset         | Actions                                                             | Chaos | Fuzz  |
+| -------------- | ------------------------------------------------------------------- | ----- | ----- |
+| `quiet`        | Core + `show` (HEAD and rev:path), `rev-parse --verify`, gc, repack | 5%    | light |
+| `remote-quiet` | Same + network actions                                              | 5%    | light |
+
+```bash
+bun oracle generate quiet --seeds 1-20 --steps 300
+bun oracle test quiet
 ```
 
 ### `test` — replay and compare
@@ -413,6 +432,8 @@ This is **not fixable** without replicating git's exact `xdl_refine_conflicts` a
 | Network ref-line structure           | `git push`/`fetch`/`pull` ref-line structure matches (From/To + ref updates); hint/error trailer lines may differ.                              |
 | Clone stderr path                    | `git clone` "Cloning into" path differs (absolute vs relative); progress output filtered.                                                       |
 | Pull merge output                    | `git pull` merge-phase stdout handled via merge-family matchers (diffstat, diagnostics, rename collisions).                                     |
+| Unsupported option                   | git exits 129 with `unknown switch`/`unknown option` + usage; just-git exits 1 with `Unknown option "..."`. Option names must match.            |
+| Usage header                         | Both exit 129; stderr compared through the `usage:` block only (git's option listing is not reproduced).                                        |
 
 Matcher policy: never bypass state divergence; only normalize equivalent output.
 
@@ -526,6 +547,7 @@ Remote presets (`remote`, `remote-core`, `remote-heavy`) test push/fetch/pull by
 | `compare.ts`         | State comparison: `compare()`, `matches()`, divergence types                                                                    |
 | `post-mortem.ts`     | Classifies divergences as known patterns vs genuine bugs. Planner comparisons for rebase, rename analysis for merge/cherry-pick |
 | `fileops.ts`         | File operation serialization (`FILE_BATCH`, `FILE_RESOLVE`, `FILE_WRITE`, `FILE_DELETE`)                                        |
+| `quiet.ts`           | `QuietInjector` — seeded `-q`/`--quiet` injection for the quiet presets                                                         |
 | `real-harness.ts`    | `RealGitHarness` — `WalkHarness` backed by real git. Starts just-git HTTP server for remote presets                             |
 | `store.ts`           | `OracleStore` — SQLite read/write for traces and steps                                                                          |
 | `schema.ts`          | Database schema initialization                                                                                                  |
@@ -554,7 +576,7 @@ traces (
   trace_id    INTEGER PRIMARY KEY AUTOINCREMENT,
   seed        INTEGER NOT NULL,
   description TEXT,
-  config      TEXT,                   -- JSON TraceConfig (chaosRate, fileGen, fuzz, cloneUrl, remoteBaseUrl)
+  config      TEXT,                   -- JSON TraceConfig (chaosRate, fileGen, fuzz, cloneUrl, remoteBaseUrl, quiet)
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 )
 

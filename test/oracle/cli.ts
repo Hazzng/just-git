@@ -273,6 +273,7 @@ Examples:
 		description,
 		cloneUrl: effectiveCloneUrl,
 		withRemote: preset.withRemote,
+		quiet: preset.quiet,
 	});
 }
 
@@ -1675,6 +1676,7 @@ Examples:
 			fileGen: preset.fileGen,
 			description: `validate: ${presetName}`,
 			withRemote: preset.withRemote,
+			quiet: preset.quiet,
 		});
 
 		console.log("  Testing...\n");

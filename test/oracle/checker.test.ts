@@ -227,4 +227,37 @@ describe("oracle checker tightening", () => {
 			checkerTestUtils.logRangeTimestampWalkerDiffers("git log HEAD..main", expected, actual),
 		).toBe(true);
 	});
+
+	test("unsupported option matcher requires the same option name", () => {
+		const { unsupportedOptionMatches } = checkerTestUtils;
+		const ours = (name: string) =>
+			`Unknown option "${name}".\nNot all git options are supported. Run 'git <command> --help' for available options.\n`;
+		const gitSwitch = "error: unknown switch `q'\nusage: git add [<options>] [--] <pathspec>...\n";
+		const gitOption = "error: unknown option `quiet'\nusage: git status [<options>]\n";
+		const gitUsageOnly = "usage: git cherry-pick [--edit] [-n] <commit>...\n";
+
+		expect(unsupportedOptionMatches(129, gitSwitch, 1, ours("-q"))).toBe(true);
+		expect(unsupportedOptionMatches(129, gitOption, 1, ours("--quiet"))).toBe(true);
+		expect(unsupportedOptionMatches(129, gitUsageOnly, 1, ours("-q"))).toBe(false);
+		expect(unsupportedOptionMatches(129, gitSwitch, 1, ours("--quiet"))).toBe(false);
+		expect(unsupportedOptionMatches(128, gitSwitch, 1, ours("-q"))).toBe(false);
+		expect(unsupportedOptionMatches(129, gitSwitch, 0, "")).toBe(false);
+	});
+
+	test("usage header matcher compares through the usage block only", () => {
+		const { usageHeaderMatches } = checkerTestUtils;
+		const usage =
+			"usage: git merge [<options>] [<commit>...]\n   or: git merge --abort\n   or: git merge --continue\n";
+		const git = `fatal: --abort expects no arguments\n\n${usage}\n    -n    do not show a diffstat\n`;
+		const ours = `fatal: --abort expects no arguments\n\n${usage}`;
+
+		expect(usageHeaderMatches(129, git, 129, ours)).toBe(true);
+		expect(
+			usageHeaderMatches(129, git, 129, ours.replace("--abort expects", "--continue expects")),
+		).toBe(false);
+		expect(usageHeaderMatches(129, git, 128, ours)).toBe(false);
+		expect(usageHeaderMatches(129, "fatal: no usage here\n", 129, "fatal: no usage here\n")).toBe(
+			false,
+		);
+	});
 });

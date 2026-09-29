@@ -38,6 +38,7 @@ import {
 	serializeServerCommit,
 	write,
 } from "./fileops";
+import { QuietInjector, type QuietConfig } from "./quiet";
 import { RealGitHarness } from "./real-harness";
 import { initDb } from "./schema";
 import { diffSnapshot, EMPTY_SNAPSHOT } from "./snapshot-delta";
@@ -55,6 +56,8 @@ export interface TraceConfig {
 	cloneUrl?: string;
 	/** HTTP base URL for the remote server used during generation (e.g. "http://localhost:34567"). */
 	remoteBaseUrl?: string;
+	/** `-q`/`--quiet` injection rates used during generation (informational; replay runs recorded commands). */
+	quiet?: QuietConfig;
 }
 
 // ── Recording harness ────────────────────────────────────────────
@@ -68,11 +71,14 @@ class RecordingHarness implements WalkHarness {
 	private buffer: { command: string; result: ExecResult | null; cwd: string | null }[] = [];
 	/** Previous full snapshot for computing deltas. */
 	private prevSnapshot: GitSnapshot = EMPTY_SNAPSHOT;
+	/** Whether `quiet` rewrites commands; turned off for fixed trace setup steps. */
+	quietActive = true;
 
 	constructor(
 		private readonly inner: RealGitHarness,
 		private readonly store: OracleStore,
 		private readonly traceId: number,
+		private readonly quiet: QuietInjector | null = null,
 		private seq: number = 0,
 	) {}
 
@@ -81,6 +87,7 @@ class RecordingHarness implements WalkHarness {
 		envOverride?: Record<string, string>,
 		cwd?: string,
 	): Promise<ExecResult> {
+		if (this.quiet && this.quietActive) command = this.quiet.apply(command);
 		// Commit-creating commands need incrementing timestamps to match replay
 		let env = envOverride;
 		if (!env && isCommitCommand(command)) {
@@ -94,13 +101,7 @@ class RecordingHarness implements WalkHarness {
 	}
 
 	async gitCommit(message: string, cwd?: string): Promise<ExecResult> {
-		const result = await this.inner.gitCommit(message, cwd);
-		this.buffer.push({
-			command: `git commit -m "${message}"`,
-			result,
-			cwd: cwd ?? null,
-		});
-		return result;
+		return this.git(`commit -m "${message}"`, undefined, cwd);
 	}
 
 	// ── Individual file ops (for conflict resolution writes) ─────
@@ -298,6 +299,8 @@ interface GenerateConfig {
 	cloneUrl?: string;
 	/** When true, spin up a remote server and wire origin for push/fetch/pull testing. */
 	withRemote?: boolean;
+	/** When set, randomly add `-q`/`--quiet` to recorded git commands (see quiet.ts). */
+	quiet?: QuietConfig;
 }
 
 /**
@@ -306,7 +309,7 @@ interface GenerateConfig {
  * and capturing snapshots into the oracle database.
  */
 export async function generateTraces(config: GenerateConfig): Promise<void> {
-	const { dbPath, seeds, steps, description, cloneUrl, fuzz, withRemote } = config;
+	const { dbPath, seeds, steps, description, cloneUrl, fuzz, withRemote, quiet } = config;
 	const actions = config.actions ?? ALL_ACTIONS;
 	const chaosRate = config.chaosRate ?? 0;
 	const worktreeRate = config.worktreeRate ?? 0;
@@ -348,6 +351,7 @@ export async function generateTraces(config: GenerateConfig): Promise<void> {
 				fuzz,
 				cloneUrl,
 				remoteBaseUrl: harness.remoteBaseUrl ?? undefined,
+				quiet,
 			};
 
 			const traceId = store.createTrace(
@@ -355,7 +359,12 @@ export async function generateTraces(config: GenerateConfig): Promise<void> {
 				description ?? `seed=${seed} steps=${steps} actions=${actions.length}`,
 				traceConfig,
 			);
-			const recorder = new RecordingHarness(harness, store, traceId);
+			const recorder = new RecordingHarness(
+				harness,
+				store,
+				traceId,
+				quiet ? new QuietInjector(seed, quiet) : null,
+			);
 
 			try {
 				await runRecordedWalk(
@@ -415,6 +424,9 @@ async function runRecordedWalk(
 		await recorder.git("init");
 		await recorder.flush();
 	}
+	// Keep the remaining fixed setup (config, remote, seed commit, initial push)
+	// unperturbed; misplaced injections there would derail every trace.
+	recorder.quietActive = false;
 
 	// Disable reflog expiry so traces are deterministic and independent of the
 	// real wall clock. Commit dates are pinned to ~2001, so any wall-clock-
@@ -446,6 +458,7 @@ async function runRecordedWalk(
 			await recorder.flush();
 		}
 	}
+	recorder.quietActive = true;
 
 	for (let step = 1; step <= steps; step++) {
 		const target = await targeter.select(recorder);
@@ -492,6 +505,7 @@ interface Preset {
 	fileGen?: FileGenConfig;
 	cloneUrl?: string;
 	withRemote?: boolean;
+	quiet?: QuietConfig;
 }
 
 /** Multiply weights for all actions in a category. */
@@ -621,6 +635,18 @@ const CORE_ACTIONS = includeNames(
 	"reflogShow",
 	"lsFiles",
 );
+
+/**
+ * Core plus non-core commands that accept `-q`. `show`/`rev-parse --verify`
+ * change stdout or exit behavior; `gc`/`repack` stderr is skipped by the
+ * checker, so for those only exit code and state are compared.
+ */
+const QUIET_ACTIONS: readonly Action[] = [
+	...CORE_ACTIONS,
+	...includeNames(ALL_ACTIONS, "showHead", "showRevPath", "revParseVerify", "repack", "gc"),
+];
+
+const QUIET_MIX: QuietConfig = { rate: 0.35, misplacedRate: 0.03 };
 
 export const PRESETS: Record<string, Preset> = {
 	/** All actions, default config. */
@@ -869,6 +895,27 @@ export const PRESETS: Record<string, Preset> = {
 		actions: boostCategory(ALL_ACTIONS, "remote", 3),
 		chaosRate: 0.05,
 		withRemote: true,
+	},
+
+	/**
+	 * Quiet: core-style walk where ~35% of commands that accept `-q`/`--quiet`
+	 * get it, plus ~3% misplaced where git rejects it (usage errors, continuation
+	 * modes, `stash -q pop`).
+	 */
+	quiet: {
+		actions: QUIET_ACTIONS,
+		chaosRate: 0.05,
+		fuzz: FUZZ_LIGHT,
+		quiet: QUIET_MIX,
+	},
+
+	/** Quiet with a remote server: adds push/fetch/pull quiet coverage. */
+	"remote-quiet": {
+		actions: [...QUIET_ACTIONS, ...NETWORK_ACTIONS],
+		chaosRate: 0.05,
+		fuzz: FUZZ_LIGHT,
+		withRemote: true,
+		quiet: QUIET_MIX,
 	},
 };
 

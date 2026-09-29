@@ -465,6 +465,45 @@ export class BatchChecker {
 		);
 	}
 
+	/**
+	 * git rejects an unknown switch with exit 129 and its usage text; just-git
+	 * reports unsupported options with exit 1 and its own message. Equivalent
+	 * when both name the same option.
+	 */
+	static unsupportedOptionMatches(
+		expectedExit: number,
+		expected: string,
+		actualExit: number,
+		actual: string,
+	): boolean {
+		if (expectedExit !== 129 || actualExit !== 1) return false;
+		const impl = actual.match(/^Unknown option "(-[^"]+)"\./);
+		if (!impl) return false;
+		const git = expected.match(/^error: unknown (switch|option) `([^']+)'\n/);
+		if (!git) return false;
+		return impl[1] === (git[1] === "switch" ? `-${git[2]}` : `--${git[2]}`);
+	}
+
+	/**
+	 * Usage errors (exit 129): compare everything up to and including the
+	 * usage header block; git's option listing that follows is not reproduced.
+	 */
+	static usageHeaderMatches(
+		expectedExit: number,
+		expected: string,
+		actualExit: number,
+		actual: string,
+	): boolean {
+		if (expectedExit !== 129 || actualExit !== 129) return false;
+		const header = (text: string): string | null => {
+			const blocks = text.split("\n\n").map((b) => b.trimEnd());
+			const end = blocks.findIndex((b) => b.startsWith("usage: git "));
+			return end === -1 ? null : blocks.slice(0, end + 1).join("\n\n");
+		};
+		const expectedHeader = header(expected);
+		return expectedHeader !== null && expectedHeader === header(actual);
+	}
+
 	private static isRebaseContinuationCommand(fullCommand: string): boolean {
 		const trimmed = fullCommand.trim();
 		return trimmed === "git rebase --continue" || trimmed === "git rebase --skip";
@@ -1095,7 +1134,13 @@ export class BatchChecker {
 			const networkPolicyExitCodeOk =
 				BatchChecker.isNetworkCommand(baseCommand) &&
 				BatchChecker.networkPolicyStderrMatches(step.stderr, output.stderr);
-			if (!networkPolicyExitCodeOk) {
+			const unsupportedOptionExitCodeOk = BatchChecker.unsupportedOptionMatches(
+				step.exitCode,
+				step.stderr,
+				output.exitCode,
+				output.stderr,
+			);
+			if (!networkPolicyExitCodeOk && !unsupportedOptionExitCodeOk) {
 				divergences.push({
 					field: "exit_code",
 					expected: step.exitCode,
@@ -1237,6 +1282,19 @@ export class BatchChecker {
 			// but the error structure is identical. Not a real divergence.
 			if (BatchChecker.mergeOverwriteStderrMatches(step.stderr, output.stderr)) {
 				// Format matches — not a real divergence
+			} else if (
+				BatchChecker.unsupportedOptionMatches(
+					step.exitCode,
+					step.stderr,
+					output.exitCode,
+					output.stderr,
+				)
+			) {
+				// Both reject the same option; git adds usage text, just-git its own message.
+			} else if (
+				BatchChecker.usageHeaderMatches(step.exitCode, step.stderr, output.exitCode, output.stderr)
+			) {
+				// Same usage error; only git's option listing is omitted.
 			} else if (BatchChecker.worktreePathStderrMatches(step.stderr, output.stderr)) {
 				// Same error, only worktree path differs (oracle=temp dir, impl=/repo)
 			} else if (BatchChecker.shellSyntaxErrorMatches(step.stderr, output.stderr)) {
@@ -1289,5 +1347,21 @@ export class BatchChecker {
 export const checkerTestUtils = {
 	logRangeTimestampWalkerDiffers(command: string, expected: string, actual: string): boolean {
 		return BatchChecker.logRangeTimestampWalkerDiffers(command, expected, actual);
+	},
+	unsupportedOptionMatches(
+		expectedExit: number,
+		expected: string,
+		actualExit: number,
+		actual: string,
+	): boolean {
+		return BatchChecker.unsupportedOptionMatches(expectedExit, expected, actualExit, actual);
+	},
+	usageHeaderMatches(
+		expectedExit: number,
+		expected: string,
+		actualExit: number,
+		actual: string,
+	): boolean {
+		return BatchChecker.usageHeaderMatches(expectedExit, expected, actualExit, actual);
 	},
 };

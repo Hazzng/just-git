@@ -243,6 +243,10 @@ async function captureVirtualOperation(
 					(await fs.exists(`${dirPath}/onto`)) ? await fs.readFile(`${dirPath}/onto`) : null,
 				],
 				[
+					"quiet",
+					(await fs.exists(`${dirPath}/quiet`)) ? await fs.readFile(`${dirPath}/quiet`) : null,
+				],
+				[
 					"REBASE_HEAD",
 					(await fs.exists(`${gitDir}/REBASE_HEAD`))
 						? await fs.readFile(`${gitDir}/REBASE_HEAD`)

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
 import { Bash, ReadWriteFs } from "just-bash";
@@ -179,13 +180,18 @@ if (args[0] === "server") {
 	});
 	const bash = new Bash({ fs: rwfs, cwd, customCommands: [git] });
 
+	// Bun's fs/promises lazily creates a FinalizationRegistry on the first
+	// FileHandle, which just-bash's defense-in-depth blocks mid-script (the
+	// first write then fails with EIO). Create it before exec.
+	await (await open(STATE_FILE, "a")).close();
+
 	const command = args.join(" ");
 	const result = await bash.exec(command);
 
 	await writeAll(process.stdout, result.stdout);
 	await writeAll(process.stderr, result.stderr);
 
-	const newCwd = bash.getCwd();
+	const newCwd = result.env.PWD ?? cwd;
 	if (newCwd !== cwd) {
 		saveCwd(newCwd);
 	}

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.0
+
+### Added
+
+- Support `-q` / `--quiet` on `init`, `clone`, `fetch`, `push`, `pull`, `commit`, `merge`, `rebase`, `checkout`, `switch`, `restore`, `reset`, `rm`, `clean`, `branch`, `gc`, `repack`, `show`, `log`, `rev-parse`, `grep`, `stash push`/`pop`/`apply`/`drop`, and `worktree add`, matching real git's output. `rebase -q` persists across `--continue` / `--skip`. Prompted by `commit -q` support from [Jeremy Geros (@JeremyGeros)](https://github.com/JeremyGeros) in [#7](https://github.com/blindmansion/just-git/pull/7).
+
+### Fixed
+
+- `merge --continue`/`--abort` and `rebase --continue`/`--abort`/`--skip` reject extra arguments with git's usage error and exit code 129.
+
 ## 1.8.3
 
 ### Added

@@ -18,12 +18,13 @@
  */
 
 import { comparePaths, err } from "./command-utils.ts";
-import { defaultStat, getStage0Entries } from "./index.ts";
+import { defaultStat, getStage0Entries, worktreeMode } from "./index.ts";
 import { isInsideWorkTree, verifyPath } from "./path-safety.ts";
 import { dirname, join } from "./path.ts";
 import { hashCleanedWorktreeEntry } from "./eol.ts";
 import { lstatSafe } from "./symlink.ts";
 import { flattenTreeToMap } from "./tree-ops.ts";
+import type { FileStat } from "../fs.ts";
 import type { GitContext, Index, IndexEntry, ObjectId } from "./types.ts";
 import { checkoutEntry, cleanEmptyDirs, walkWorkTree } from "./worktree.ts";
 
@@ -101,6 +102,9 @@ interface PathState {
 	 * Memoized: first call hashes, subsequent calls return cached result.
 	 */
 	getWorktreeHash: () => Promise<ObjectId | null>;
+
+	/** Lazy worktree mode, null when the path is not on disk. */
+	getWorktreeMode: () => Promise<number | null>;
 
 	/** Mode from the head tree (for entry creation). */
 	headMode: string | null;
@@ -383,20 +387,36 @@ async function buildPathStates(
 			return cachedIgnored;
 		};
 
+		let cachedStat: FileStat | null | undefined;
+		const getWorktreeStat = async (): Promise<FileStat | null> => {
+			if (cachedStat !== undefined) return cachedStat;
+			cachedStat =
+				existsOnDisk && ctx.workTree
+					? await lstatSafe(ctx.fs, join(ctx.workTree, path)).catch(() => null)
+					: null;
+			return cachedStat;
+		};
+
 		let cachedHash: ObjectId | null | undefined;
 		const getWorktreeHash = async (): Promise<ObjectId | null> => {
 			if (cachedHash !== undefined) return cachedHash;
-			if (!existsOnDisk || !ctx.workTree) {
+			const st = await getWorktreeStat();
+			if (!st || !ctx.workTree) {
 				cachedHash = null;
 				return null;
 			}
 			const fullPath = join(ctx.workTree, path);
 			try {
-				cachedHash = await hashCleanedWorktreeEntry(ctx, fullPath, indexHash ?? undefined);
+				cachedHash = await hashCleanedWorktreeEntry(ctx, fullPath, indexHash ?? undefined, st);
 			} catch {
 				cachedHash = null;
 			}
 			return cachedHash;
+		};
+
+		const getWorktreeMode = async (): Promise<number | null> => {
+			const st = await getWorktreeStat();
+			return st ? worktreeMode(ctx.fs, indexEntry, st) : null;
 		};
 
 		states.push({
@@ -410,6 +430,7 @@ async function buildPathStates(
 			existsOnDisk,
 			isIgnoredOnDisk,
 			getWorktreeHash,
+			getWorktreeMode,
 			headMode,
 			remoteMode,
 		});
@@ -780,6 +801,9 @@ export async function checkSingleRequirement(
 					// Escape hatch: worktree deleted and result also deletes
 					if (wtHash === null && resultHash === null) return null;
 				}
+				return UnpackError.NOT_UPTODATE_FILE;
+			}
+			if (wtHash !== null && (await state.getWorktreeMode()) !== state.indexMode) {
 				return UnpackError.NOT_UPTODATE_FILE;
 			}
 			return null;

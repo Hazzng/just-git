@@ -44,3 +44,25 @@ describe("checkoutEntry executable bit", () => {
 		expect((await fs.stat("/wt/run.sh")).mode).toBe(0o100644);
 	});
 });
+
+class ModePreservingFs extends MemoryFileSystem {
+	override async writeFile(path: string, content: string | Uint8Array): Promise<void> {
+		const existing = await this.stat(path).catch(() => null);
+		await super.writeFile(path, content);
+		if (existing) await this.chmod(path, existing.mode);
+	}
+}
+
+describe("checkoutEntry on a filesystem whose writeFile keeps the old mode", () => {
+	test("a 100644 entry over an executable file clears the exec bit", async () => {
+		const fs = new ModePreservingFs();
+		const ctx = await context(fs);
+		const hash = await writeObject(ctx, "blob", new TextEncoder().encode("#!/bin/sh\n"));
+
+		await checkoutEntry(ctx, { path: "run.sh", hash, mode: 0o100755 });
+		expect((await fs.stat("/wt/run.sh")).mode).toBe(0o100755);
+
+		await checkoutEntry(ctx, { path: "run.sh", hash, mode: 0o100644 });
+		expect((await fs.stat("/wt/run.sh")).mode).toBe(0o100644);
+	});
+});

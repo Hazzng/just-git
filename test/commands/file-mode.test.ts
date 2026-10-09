@@ -47,3 +47,27 @@ describe("FileSystem without chmod behaves like core.fileMode=false", () => {
 		expect((await run("ls-files -s new.sh", "/repo")).stdout).toMatch(/^100644 /);
 	});
 });
+
+describe("FileSystem without symlinks behaves like core.symlinks=false", () => {
+	test("status is clean after checking out a 120000 entry as a plain file", async () => {
+		const fs = new MemoryFileSystem();
+		const git = createGit({ fs });
+		const run = (cmd: string, cwd: string) => git.exec(cmd, { cwd, env: TEST_ENV });
+		await fs.mkdir("/repo", { recursive: true });
+		await fs.writeFile("/repo/a.txt", "a\n");
+		await fs.symlink("a.txt", "/repo/link");
+		await run("init", "/repo");
+		await run("add .", "/repo");
+		await run("commit -m link", "/repo");
+		for (const method of ["symlink", "readlink", "lstat"]) {
+			Object.defineProperty(fs, method, { value: undefined });
+		}
+
+		expect((await run("clone /repo /clone", "/")).exitCode).toBe(0);
+		expect((await fs.stat("/clone/link")).isFile).toBe(true);
+		expect(await fs.readFile("/clone/link")).toBe("a.txt");
+		expect((await run("ls-files -s link", "/clone")).stdout).toMatch(/^120000 /);
+		expect((await run("status --short", "/clone")).stdout).toBe("");
+		expect((await run("diff", "/clone")).stdout).toBe("");
+	});
+});

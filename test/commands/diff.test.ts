@@ -1232,3 +1232,16 @@ describe("git diff: executable bit", () => {
 		);
 	});
 });
+
+describe("git diff: mode-only change on a binary file", () => {
+	test("prints the mode lines and no binary notice", async () => {
+		const bash = createTestBash({ files: EMPTY_REPO, env: TEST_ENV });
+		await bash.fs.writeFile("/repo/tool.bin", new Uint8Array([0x00, 0x01, 0x02]));
+		await bash.exec("git init && chmod 755 tool.bin && git add tool.bin && git commit -m bin");
+		await bash.exec("chmod 644 tool.bin");
+
+		expect((await bash.exec("git diff")).stdout).toBe(
+			"diff --git a/tool.bin b/tool.bin\nold mode 100755\nnew mode 100644\n",
+		);
+	});
+});

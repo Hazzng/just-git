@@ -844,3 +844,20 @@ describe("git commit: executable bit", () => {
 		expect(result.stdout).toBe("On branch main\nnothing to commit, working tree clean\n");
 	});
 });
+
+describe("git commit: staged mode-only change", () => {
+	test("commits when only the mode differs from HEAD", async () => {
+		const bash = await setupExecBitRepo();
+		const before = (await bash.exec("git rev-parse HEAD")).stdout;
+		await bash.exec("chmod 644 run.sh && git add run.sh");
+
+		const result = await bash.exec("git commit -m mode");
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toMatch(/^\[main [0-9a-f]+\] mode\n/);
+		expect((await bash.exec("git rev-parse HEAD")).stdout).not.toBe(before);
+		expect((await bash.exec("git status --short")).stdout).toBe("");
+		expect((await bash.exec("git diff HEAD~1 HEAD")).stdout).toBe(
+			"diff --git a/run.sh b/run.sh\nold mode 100755\nnew mode 100644\n",
+		);
+	});
+});

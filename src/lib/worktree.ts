@@ -123,11 +123,6 @@ export async function diffIndexToWorkTree(
 	return results.sort((a, b) => comparePaths(a.path, b.path));
 }
 
-/**
- * Mode git would record for a worktree entry. A filesystem without symlink
- * support checks symlinks out as plain files, so a regular file at an index
- * symlink's path still counts as the symlink (git's `core.symlinks=false`).
- */
 function worktreeMode(ctx: GitContext, entry: IndexEntry, st: FileStat): number {
 	if (st.isFile && isSymlinkMode(entry.mode) && !ctx.fs.symlink) return entry.mode;
 	return gitModeFromFileStat(st);
@@ -204,9 +199,7 @@ export async function checkoutEntry(
 			} else {
 				existingMode = st.mode;
 			}
-		} catch {
-			// Path doesn't exist — fine
-		}
+		} catch {}
 		// Smudge: with core.autocrlf=true, checkout writes CRLF line endings
 		// (lfToCrlf declines for binary or already-CR content).
 		const policy = await getEolPolicy(ctx);

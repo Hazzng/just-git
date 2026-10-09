@@ -526,8 +526,6 @@ export class TreeBackedFs implements FileSystem {
 		if (this.removals.has(norm) || !(await this.exists(norm))) {
 			throw new Error(`ENOENT: no such file or directory, chmod '${path}'`);
 		}
-		// Tree-backed entries are immutable, so copy the entry into the overlay
-		// with the new bits. Symlinks keep their 120000 mode, as in git.
 		const st = await this.lstat(norm);
 		if (st.isSymbolicLink) return;
 		this.ensureOverlayParents(norm);

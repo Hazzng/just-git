@@ -1293,7 +1293,6 @@ export function formatUnifiedDiff(opts: FormatOptions): string {
 	const out: string[] = [];
 	pushDiffGitHeader(out, opts, newPath, isNew, isDeleted, isRename);
 
-	// For exact renames and mode-only changes, stop after the header
 	if (hunks.length === 0) {
 		return `${out.join("\n")}\n`;
 	}

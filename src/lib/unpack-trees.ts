@@ -81,7 +81,6 @@ interface PathState {
 	/** Hash currently in the index (stage 0), or null if not in index. */
 	indexHash: ObjectId | null;
 
-	/** Mode currently in the index (stage 0), or null if not in index. */
 	indexMode: number | null;
 
 	/** Stage of the current index entry (0 for normal, >0 for conflict). */
@@ -423,10 +422,6 @@ async function buildPathStates(
 // SECTION 7: One-Way Merge
 // =====================================================================
 
-/**
- * Git's `same()`: two entries match only when hash and mode agree, so a
- * mode-only change (100644 ↔ 100755) still counts as a change.
- */
 function same(
 	hashA: ObjectId | null,
 	modeA: string | number | null,

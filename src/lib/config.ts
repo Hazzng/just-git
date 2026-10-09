@@ -527,8 +527,7 @@ export async function getConfigValue(
 
 /**
  * Lowercase the section and variable name of a dotted key, leaving any
- * subsection as typed, the way git compares config keys. Override maps
- * are stored and looked up by this form.
+ * subsection as typed, the way git compares config keys.
  */
 export function canonicalConfigKey(dottedKey: string): string {
 	const first = dottedKey.indexOf(".");

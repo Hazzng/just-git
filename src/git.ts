@@ -259,13 +259,9 @@ const GLOBAL_USAGE =
 	"usage: git [--version] [--help] [-C <path>] [-c <name>=<value>]\n" +
 	"           [-p | --paginate | -P | --no-pager] <command> [<args>]\n";
 
-/** Options git accepts before the subcommand, e.g. `git -C sub -c user.name=x commit`. */
 interface GlobalOptions {
-	/** `-C` directories in order, each relative to the previous one. */
 	chdirs: string[];
-	/** `-c` overlay keyed by normalised dotted name, or undefined when none given. */
 	config: Record<string, string> | undefined;
-	/** The subcommand and its arguments. */
 	args: string[];
 }
 
@@ -281,10 +277,6 @@ function configParseError(message: string): ExecResult {
 	};
 }
 
-/**
- * Split leading global options from the subcommand. Messages and exit
- * codes match git: 129 for a malformed option, 128 for a bad `-c` key.
- */
 function parseGlobalOptions(args: string[]): GlobalOptions | ExecResult {
 	const chdirs: string[] = [];
 	let config: Record<string, string> | undefined;
@@ -300,8 +292,7 @@ function parseGlobalOptions(args: string[]): GlobalOptions | ExecResult {
 				const eq = spec.indexOf("=");
 				const key = eq === -1 ? spec : spec.slice(0, eq);
 				if (key === "") return configParseError("empty config key");
-				const dot = key.indexOf(".");
-				if (dot === -1) return configParseError(`key does not contain a section: ${key}`);
+				if (!key.includes(".")) return configParseError(`key does not contain a section: ${key}`);
 				config ??= {};
 				config[canonicalConfigKey(key)] = eq === -1 ? "true" : spec.slice(eq + 1);
 				break;
@@ -324,7 +315,6 @@ function parseGlobalOptions(args: string[]): GlobalOptions | ExecResult {
 	return { chdirs, config, args: args.slice(i) };
 }
 
-/** `-c` values sit below operator-locked values and above everything else. */
 function withCommandLineConfig(
 	overrides: ConfigOverrides | undefined,
 	config: Record<string, string>,
@@ -533,8 +523,6 @@ export class Git {
 				}
 			}
 
-			// Command handlers close over the extensions, so a per-invocation
-			// overlay means a fresh command tree (about 0.3ms) for this call only.
 			const inner = config
 				? createGitCommand({
 						...this.ext,

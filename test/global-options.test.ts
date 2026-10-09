@@ -6,7 +6,6 @@ const USAGE =
 	"usage: git [--version] [--help] [-C <path>] [-c <name>=<value>]\n" +
 	"           [-p | --paginate | -P | --no-pager] <command> [<args>]\n";
 
-/** A shell whose `git` goes through `Git.execute`, the way just-bash integrations do. */
 function shell(options?: Parameters<typeof createGit>[0]): Bash {
 	return new Bash({ fs: new InMemoryFs(), customCommands: [createGit(options)], cwd: "/" });
 }

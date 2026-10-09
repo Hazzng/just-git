@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EMPTY_REPO, TEST_ENV_NAMED as TEST_ENV } from "../fixtures";
-import { createTestBash, readFile } from "../util";
+import { createTestBash, permissionBits, readFile, setupExecBitRepo } from "../util";
 
 describe("git stash", () => {
 	// ── Error cases ──────────────────────────────────────────────────
@@ -825,4 +825,25 @@ describe("git stash", () => {
 			expect((await bash.exec("git stash list")).stdout).toBe("");
 		});
 	});
+});
+
+describe("git stash: executable bit", () => {
+	test("stashes a mode-only change and pop restores it", async () => {
+		const bash = await setupExecBitRepo();
+		const short = (await bash.exec("git rev-parse --short HEAD")).stdout.trim();
+		await bash.exec("chmod 644 run.sh");
+
+		const saved = await bash.exec("git stash");
+		expect(saved.exitCode).toBe(0);
+		expect(saved.stdout).toBe(
+			`Saved working directory and index state WIP on main: ${short} exec\n`,
+		);
+		expect(await permissionBits(bash.fs, "/repo/run.sh")).toBe(0o755);
+		expect((await bash.exec("git status --short")).stdout).toBe("");
+		expect((await bash.exec("git stash show -p")).stdout).toBe(
+			"diff --git a/run.sh b/run.sh\nold mode 100755\nnew mode 100644\n",
+		);
+	});
+
+	test.todo("stash pop restores a mode-only change (merge-ort triviallyResolve compares hashes only)", () => {});
 });

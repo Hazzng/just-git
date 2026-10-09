@@ -6,6 +6,7 @@ import {
 	getConflictedPaths,
 	getStage0Entries,
 	readIndex,
+	worktreeMode,
 	writeIndex,
 } from "./index.ts";
 import { mergeOrtNonRecursive } from "./merge-ort.ts";
@@ -21,7 +22,7 @@ import {
 	ZERO_HASH,
 } from "./reflog.ts";
 import { branchNameFromRef, deleteRef, readHead, resolveHead, updateRef } from "./refs.ts";
-import { isSubmoduleMode } from "./symlink.ts";
+import { isSubmoduleMode, lstatSafe } from "./symlink.ts";
 import { buildTreeFromIndex, diffTrees, flattenTree, flattenTreeToMap } from "./tree-ops.ts";
 import type { GitContext, IndexEntry, ObjectId } from "./types.ts";
 import { applyWorktreeOps, resetHard, type WorktreeOp } from "./unpack-trees.ts";
@@ -131,8 +132,9 @@ export async function saveStash(
 		if (!indexEntry) continue; // skip untracked
 
 		const fullPath = join(workTree, filePath);
-		const blobHash = await hashCleanedWorktreeEntry(ctx, fullPath, indexEntry.hash);
-		if (blobHash !== indexEntry.hash) {
+		const st = await lstatSafe(ctx.fs, fullPath);
+		const blobHash = await hashCleanedWorktreeEntry(ctx, fullPath, indexEntry.hash, st);
+		if (blobHash !== indexEntry.hash || worktreeMode(ctx.fs, indexEntry, st) !== indexEntry.mode) {
 			hasWorkTreeChanges = true;
 			break;
 		}
@@ -206,10 +208,10 @@ export async function saveStash(
 		const content = await cleanForCheckin(ctx, raw, indexEntry?.hash ?? headEntry?.hash);
 		const blobHash = await writeObject(ctx, "blob", content);
 
-		const mode = indexEntry ? indexEntry.mode : parseInt(headEntry?.mode ?? "100644", 8);
+		const tracked = indexEntry ?? { mode: parseInt(headEntry?.mode ?? "100644", 8) };
 		wtEntries.push({
 			path: filePath,
-			mode,
+			mode: worktreeMode(ctx.fs, tracked, await lstatSafe(ctx.fs, fullPath)),
 			hash: blobHash,
 			stage: 0,
 			stat: defaultStat(),

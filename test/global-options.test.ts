@@ -79,9 +79,7 @@ describe("git -c <name>=<value>", () => {
 	test("rejects an empty key", async () => {
 		const r = await shell().exec("git -c =value status");
 		expect(r.stdout).toBe("");
-		expect(r.stderr).toBe(
-			"error: empty config key\nfatal: unable to parse command-line config\n",
-		);
+		expect(r.stderr).toBe("error: empty config key\nfatal: unable to parse command-line config\n");
 		expect(r.exitCode).toBe(128);
 	});
 

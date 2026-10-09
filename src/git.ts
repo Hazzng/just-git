@@ -13,6 +13,8 @@ import {
 } from "./hooks.ts";
 import type { MergeDriver } from "./lib/merge-ort.ts";
 import { contextFromExtensions } from "./lib/command-utils.ts";
+import { canonicalConfigKey } from "./lib/config.ts";
+import { resolve } from "./lib/path.ts";
 import { findRepo as findRepoOnFs } from "./lib/repo.ts";
 import type { CredentialCache } from "./lib/transport/remote.ts";
 import type { GitContext, ObjectStore, RefStore, RemoteResolver } from "./lib/types.ts";
@@ -243,6 +245,97 @@ function mergeIdentityIntoConfig(
 	};
 }
 
+function canonicalizeOverrides(config: ConfigOverrides | undefined): ConfigOverrides | undefined {
+	if (!config) return config;
+	const canon = (tier: Record<string, string>) =>
+		Object.fromEntries(Object.entries(tier).map(([k, v]) => [canonicalConfigKey(k), v]));
+	return {
+		...(config.locked ? { locked: canon(config.locked) } : {}),
+		...(config.defaults ? { defaults: canon(config.defaults) } : {}),
+	};
+}
+
+const GLOBAL_USAGE =
+	"usage: git [--version] [--help] [-C <path>] [-c <name>=<value>]\n" +
+	"           [-p | --paginate | -P | --no-pager] <command> [<args>]\n";
+
+/** Options git accepts before the subcommand, e.g. `git -C sub -c user.name=x commit`. */
+interface GlobalOptions {
+	/** `-C` directories in order, each relative to the previous one. */
+	chdirs: string[];
+	/** `-c` overlay keyed by normalised dotted name, or undefined when none given. */
+	config: Record<string, string> | undefined;
+	/** The subcommand and its arguments. */
+	args: string[];
+}
+
+function usageError(message: string): ExecResult {
+	return { stdout: "", stderr: `${message}\n${GLOBAL_USAGE}`, exitCode: 129 };
+}
+
+function configParseError(message: string): ExecResult {
+	return {
+		stdout: "",
+		stderr: `error: ${message}\nfatal: unable to parse command-line config\n`,
+		exitCode: 128,
+	};
+}
+
+/**
+ * Split leading global options from the subcommand. Messages and exit
+ * codes match git: 129 for a malformed option, 128 for a bad `-c` key.
+ */
+function parseGlobalOptions(args: string[]): GlobalOptions | ExecResult {
+	const chdirs: string[] = [];
+	let config: Record<string, string> | undefined;
+	let i = 0;
+	while (i < args.length) {
+		const arg = args[i]!;
+		if (!arg.startsWith("-") || arg === "-" || arg === "--help" || arg === "--version") break;
+		i++;
+		switch (arg) {
+			case "-c": {
+				const spec = args[i++];
+				if (spec === undefined) return usageError("-c expects a configuration string");
+				const eq = spec.indexOf("=");
+				const key = eq === -1 ? spec : spec.slice(0, eq);
+				if (key === "") return configParseError("empty config key");
+				const dot = key.indexOf(".");
+				if (dot === -1) return configParseError(`key does not contain a section: ${key}`);
+				config ??= {};
+				config[canonicalConfigKey(key)] = eq === -1 ? "true" : spec.slice(eq + 1);
+				break;
+			}
+			case "-C": {
+				const dir = args[i++];
+				if (dir === undefined) return usageError("no directory given for -C");
+				chdirs.push(dir);
+				break;
+			}
+			case "-p":
+			case "--paginate":
+			case "-P":
+			case "--no-pager":
+				break;
+			default:
+				return usageError(`unknown option: ${arg}`);
+		}
+	}
+	return { chdirs, config, args: args.slice(i) };
+}
+
+/** `-c` values sit below operator-locked values and above everything else. */
+function withCommandLineConfig(
+	overrides: ConfigOverrides | undefined,
+	config: Record<string, string>,
+): ConfigOverrides {
+	return { ...overrides, locked: { ...config, ...overrides?.locked } };
+}
+
+async function isDirectory(fs: FileSystem, path: string): Promise<boolean> {
+	return (await fs.exists(path)) && (await fs.stat(path)).isDirectory;
+}
+
 /**
  * Git command handler. Runs git subcommands against a virtual filesystem.
  *
@@ -287,7 +380,9 @@ export class Git {
 		this.blocked = options?.disabled?.length ? new Set<string>(options.disabled) : null;
 		const network = options?.network;
 
-		const configOverrides = mergeIdentityIntoConfig(options?.identity, options?.config);
+		const configOverrides = canonicalizeOverrides(
+			mergeIdentityIntoConfig(options?.identity, options?.config),
+		);
 
 		const gitDirExt = options?.gitDir
 			? {
@@ -377,9 +472,25 @@ export class Git {
 		return this.execute(args, { fs, cwd, env, stdin: ctx?.stdin ?? "" });
 	};
 
-	execute = (args: string[], ctx: CommandContext): Promise<ExecResult> => {
+	execute = (rawArgs: string[], ctx: CommandContext): Promise<ExecResult> => {
 		return this.withLock(ctx.fs, async () => {
+			const global = parseGlobalOptions(rawArgs);
+			if ("exitCode" in global) return global;
+			const { args, config, chdirs } = global;
 			const command = args[0] ?? "";
+
+			let cwd = ctx.cwd;
+			for (const dir of chdirs) {
+				cwd = resolve(cwd, dir);
+				if (!(await isDirectory(ctx.fs, cwd))) {
+					return {
+						stdout: "",
+						stderr: `fatal: cannot change to '${dir}': No such file or directory\n`,
+						exitCode: 128,
+					};
+				}
+			}
+			if (cwd !== ctx.cwd) ctx = { ...ctx, cwd };
 
 			if (command === "--version" || command === "version") {
 				return {
@@ -422,7 +533,15 @@ export class Git {
 				}
 			}
 
-			const result = await this.inner.execute(args, ctx);
+			// Command handlers close over the extensions, so a per-invocation
+			// overlay means a fresh command tree (about 0.3ms) for this call only.
+			const inner = config
+				? createGitCommand({
+						...this.ext,
+						configOverrides: withCommandLineConfig(this.ext.configOverrides, config),
+					}).toCommand()
+				: this.inner;
+			const result = await inner.execute(args, ctx);
 
 			if (this.hooks?.afterCommand) {
 				await this.hooks.afterCommand({

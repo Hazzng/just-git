@@ -33,6 +33,7 @@ interface PathStateInput {
 	headHash?: ObjectId | null;
 	remoteHash?: ObjectId | null;
 	indexHash?: ObjectId | null;
+	indexMode?: number | null;
 	indexStage?: number;
 	existsOnDisk?: boolean;
 	ignoredOnDisk?: boolean;
@@ -63,6 +64,7 @@ export function makeState(input: PathStateInput = {}): PathState {
 		headHash: input.headHash ?? null,
 		remoteHash: input.remoteHash ?? null,
 		indexHash,
+		indexMode: input.indexMode ?? (indexHash ? 0o100644 : null),
 		indexStage: input.indexStage ?? 0,
 		existsOnDisk,
 		isIgnoredOnDisk: async () => ignoredOnDisk,

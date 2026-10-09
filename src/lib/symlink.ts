@@ -13,6 +13,12 @@ export function isSymlinkMode(mode: number | string): boolean {
 	return mode === 0o120000;
 }
 
+/** Check whether a git mode (numeric or string) represents an executable file. */
+export function isExecutableMode(mode: number | string): boolean {
+	if (typeof mode === "string") return mode === "100755";
+	return mode === 0o100755;
+}
+
 /** Check whether a git mode (numeric or string) represents a submodule (gitlink). */
 export function isSubmoduleMode(mode: number | string): boolean {
 	if (typeof mode === "string") return mode === "160000";

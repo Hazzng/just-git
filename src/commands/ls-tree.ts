@@ -10,11 +10,13 @@ import {
 import { readObject } from "../lib/object-db.ts";
 import { parseCommit } from "../lib/objects/commit.ts";
 import { parseTag } from "../lib/objects/tag.ts";
-import { parseTree } from "../lib/objects/tree.ts";
 import { join, relative } from "../lib/path.ts";
 import { resolveRevision } from "../lib/rev-parse.ts";
+import { readTreeEntries } from "../lib/tree-ops.ts";
 import { FileMode, type GitRepo, type ObjectId, type TreeEntry } from "../lib/types.ts";
 import { a, type Command, f, o } from "../parse/index.ts";
+
+const USAGE = "usage: git ls-tree [<options>] <tree-ish> [<path>...]\n";
 
 interface WalkOptions {
 	recursive: boolean;
@@ -36,7 +38,7 @@ export function registerLsTreeCommand(parent: Command, ext?: GitExtensions): voi
 	parent.command("ls-tree", {
 		description: "List the contents of a tree object",
 		args: [
-			a.string().name("tree-ish").describe("Tree, commit or tag to list"),
+			a.string().name("tree-ish").describe("Tree, commit or tag to list").optional(),
 			a.string().name("path").variadic().optional(),
 		],
 		options: {
@@ -57,13 +59,21 @@ export function registerLsTreeCommand(parent: Command, ext?: GitExtensions): voi
 			if (isCommandError(gitCtxOrError)) return gitCtxOrError;
 			const gitCtx = gitCtxOrError;
 
-			const resolved = await resolveRevision(gitCtx, args["tree-ish"]);
-			if (!resolved) return fatal(`Not a valid object name ${args["tree-ish"]}`);
-			const treeHash = await peelToTree(gitCtx, resolved);
-			if (!treeHash) return fatal("not a tree object");
+			const [treeIsh, ...rawPaths] =
+				args["tree-ish"] === undefined
+					? meta.passthrough
+					: [args["tree-ish"], ...(args.path ?? []), ...meta.passthrough];
+			if (treeIsh === undefined) return { stdout: "", stderr: USAGE, exitCode: 129 };
+
+			const resolved = await resolveRevision(gitCtx, treeIsh);
+			if (!resolved) return fatal(`Not a valid object name ${treeIsh}`);
+			if (rawPaths.includes("")) {
+				return fatal(
+					"empty string is not a valid pathspec. please use . instead if you meant to match all paths",
+				);
+			}
 
 			const prefix = args.fullTree ? "" : getCwdPrefix(gitCtx, ctx.cwd);
-			const rawPaths = [...(args.path ?? []), ...meta.passthrough];
 			const filters: PathFilter[] = [];
 			for (const raw of rawPaths) {
 				const filter = resolvePathFilter(raw, prefix, gitCtx.workTree);
@@ -75,6 +85,9 @@ export function registerLsTreeCommand(parent: Command, ext?: GitExtensions): voi
 				filters.push(filter);
 			}
 			if (filters.length === 0 && prefix !== "") filters.push({ path: prefix, listContents: true });
+
+			const treeHash = await peelToTree(gitCtx, resolved);
+			if (!treeHash) return fatal("not a tree object");
 
 			const entries: ListedEntry[] = [];
 			await collect(gitCtx, treeHash, "", entries, {
@@ -88,8 +101,8 @@ export function registerLsTreeCommand(parent: Command, ext?: GitExtensions): voi
 			const terminator = args.nulTerminate ? "\0" : "\n";
 			let stdout = "";
 			for (const entry of entries) {
-				const displayPath = prefix ? relative(prefix, entry.path) || "./" : entry.path;
-				const name = args.nulTerminate ? displayPath : quotePath(displayPath);
+				const shown = displayPath(prefix, entry.path);
+				const name = args.nulTerminate ? shown : quotePath(shown);
 				if (nameOnly) {
 					stdout += name + terminator;
 					continue;
@@ -139,8 +152,7 @@ async function collect(
 	out: ListedEntry[],
 	opts: WalkOptions,
 ): Promise<void> {
-	const raw = await readObject(ctx, treeHash);
-	for (const entry of parseTree(raw.content).entries) {
+	for (const entry of await readTreeEntries(ctx, treeHash)) {
 		const path = base ? `${base}/${entry.name}` : entry.name;
 		if (opts.filters.length > 0 && !opts.filters.some((f) => filterMatches(f, path, entry.mode))) {
 			continue;
@@ -166,6 +178,12 @@ function filterMatches(filter: PathFilter, path: string, mode: string): boolean 
 		return !filter.listContents || mode === FileMode.DIRECTORY || mode === FileMode.SUBMODULE;
 	}
 	return mode === FileMode.DIRECTORY && filter.path.startsWith(`${path}/`);
+}
+
+function displayPath(prefix: string, path: string): string {
+	if (!prefix) return path;
+	const rel = relative(prefix, path) || ".";
+	return prefix === path || prefix.startsWith(`${path}/`) ? `${rel}/` : rel;
 }
 
 function objectType(mode: string): "tree" | "commit" | "blob" {

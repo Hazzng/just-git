@@ -46,6 +46,16 @@ const CASES: { cwd: string; args: string }[] = [
 	{ cwd: "src", args: "--full-tree HEAD src/" },
 	{ cwd: "src", args: "-r --full-tree HEAD lib" },
 	{ cwd: "src/lib", args: "-r --name-only HEAD ../../" },
+	{ cwd: "src/lib", args: "HEAD ../../" },
+	{ cwd: "src/lib", args: "-r -d HEAD ../../" },
+	{ cwd: "src/lib", args: "-r -t HEAD .." },
+	{ cwd: "", args: "HEAD ''" },
+	{ cwd: "src", args: "HEAD ../../x ''" },
+	{ cwd: "", args: "-- HEAD" },
+	{ cwd: "", args: "-r -- HEAD" },
+	{ cwd: "", args: "-- HEAD src" },
+	{ cwd: "", args: "-- HEAD -- src" },
+	{ cwd: "", args: "-- bogus" },
 ];
 
 describe("interop: git ls-tree matches real git", () => {
@@ -88,4 +98,24 @@ describe("interop: git ls-tree matches real git", () => {
 			);
 		});
 	}
+
+	test("a tree entry that points at a blob fails like git", async () => {
+		const readmeBlob = (await realGit(sandbox, "rev-parse HEAD:README.md")).stdout.trim();
+		writeToSandbox(
+			sandbox,
+			".git/bad-tree",
+			Buffer.concat([Buffer.from("40000 bad\0"), Buffer.from(readmeBlob, "hex")]),
+		);
+		const badTree = (
+			await realGit(sandbox, "hash-object -t tree -w --literally .git/bad-tree")
+		).stdout.trim();
+		const expected = await realGit(sandbox, `ls-tree -r ${badTree}`);
+		const actual = await jg(justBash(sandbox), `git ls-tree -r ${badTree}`);
+		expect(expected).toMatchObject({ stdout: "", exitCode: 1 });
+		expect({ stdout: actual.stdout, stderr: actual.stderr, exitCode: actual.exitCode }).toEqual({
+			stdout: "",
+			stderr: "Expected tree object, got blob",
+			exitCode: 1,
+		});
+	});
 });

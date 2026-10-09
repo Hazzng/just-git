@@ -646,10 +646,10 @@ Options:
 git ls-tree - List the contents of a tree object
 
 Usage:
-  git ls-tree [options] <tree-ish> [path...]
+  git ls-tree [options] [tree-ish] [path...]
 
 Arguments:
-  tree-ish  Tree, commit or tag to list (required)
+  tree-ish  Tree, commit or tag to list
   path...
 
 Options:

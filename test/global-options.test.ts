@@ -33,8 +33,23 @@ describe("git -c <name>=<value>", () => {
 		await bash.exec("git config user.name old", { cwd: "/r" });
 		const overlaid = await bash.exec("git -c user.name=tmp config user.name", { cwd: "/r" });
 		expect(overlaid.stdout).toBe("tmp\n");
+		expect(overlaid.stderr).toBe("");
+		expect(overlaid.exitCode).toBe(0);
 		const after = await bash.exec("git config user.name", { cwd: "/r" });
 		expect(after.stdout).toBe("old\n");
+		expect(after.exitCode).toBe(0);
+	});
+
+	test("reaches a caller that spells the key in camelCase", async () => {
+		const bash = shell();
+		await initRepo(bash);
+		await bash.exec("echo junk > u && mkdir d && echo x > d/y", { cwd: "/r" });
+		const clean = await bash.exec("git -c clean.requireForce=false clean", { cwd: "/r" });
+		expect(clean.stdout).toBe("Removing u\n");
+		expect(clean.stderr).toBe("");
+		expect(clean.exitCode).toBe(0);
+		const ls = await bash.exec("ls", { cwd: "/r" });
+		expect(ls.stdout).toBe("d\nf\n");
 	});
 
 	test("covers arbitrary keys, lowercasing section and key", async () => {
@@ -48,6 +63,8 @@ describe("git -c <name>=<value>", () => {
 		]) {
 			const r = await bash.exec(`git -c ${arg} config ${key}`, { cwd: "/r" });
 			expect(r.stdout).toBe(`${arg?.split("=")[1]}\n`);
+			expect(r.stderr).toBe("");
+			expect(r.exitCode).toBe(0);
 		}
 	});
 
@@ -55,12 +72,14 @@ describe("git -c <name>=<value>", () => {
 		const bash = shell();
 		await bash.exec("mkdir /n");
 		const init = await bash.exec("git -c init.defaultBranch=trunk init -q", { cwd: "/n" });
+		expect(init.stderr).toBe("");
 		expect(init.exitCode).toBe(0);
 		const head = await bash.exec("git branch --show-current", { cwd: "/n" });
 		expect(head.stdout).toBe("trunk\n");
+		expect(head.exitCode).toBe(0);
 	});
 
-	test("a name without '=' reads as true", async () => {
+	test("a name without '=' reads as true, as parseConfig reads a valueless key", async () => {
 		const bash = shell();
 		await initRepo(bash);
 		const r = await bash.exec("git -c foo.bar config foo.bar", { cwd: "/r" });
@@ -73,6 +92,8 @@ describe("git -c <name>=<value>", () => {
 		await initRepo(bash);
 		const r = await bash.exec("git -c user.name=agent config user.name", { cwd: "/r" });
 		expect(r.stdout).toBe("Locked\n");
+		expect(r.stderr).toBe("");
+		expect(r.exitCode).toBe(0);
 	});
 
 	test("rejects an empty key", async () => {
@@ -84,6 +105,7 @@ describe("git -c <name>=<value>", () => {
 
 	test("rejects a key without a section", async () => {
 		const r = await shell().exec("git -c foo=1 status");
+		expect(r.stdout).toBe("");
 		expect(r.stderr).toBe(
 			"error: key does not contain a section: foo\nfatal: unable to parse command-line config\n",
 		);
@@ -108,6 +130,7 @@ describe("git -C <path>", () => {
 		expect(status.exitCode).toBe(0);
 		const prefix = await bash.exec("git -C /r -C sub rev-parse --show-prefix", { cwd: "/" });
 		expect(prefix.stdout).toBe("sub/\n");
+		expect(prefix.exitCode).toBe(0);
 	});
 
 	test("fails when the directory does not exist", async () => {
@@ -119,6 +142,7 @@ describe("git -C <path>", () => {
 
 	test("rejects -C with no argument", async () => {
 		const r = await shell().exec("git -C");
+		expect(r.stdout).toBe("");
 		expect(r.stderr).toBe(`no directory given for -C\n${USAGE}`);
 		expect(r.exitCode).toBe(129);
 	});
@@ -134,6 +158,7 @@ describe("other leading options", () => {
 
 	test("an attached -c value is an unknown option, as in git", async () => {
 		const r = await shell().exec("git -cfoo.bar=1 status");
+		expect(r.stdout).toBe("");
 		expect(r.stderr).toBe(`unknown option: -cfoo.bar=1\n${USAGE}`);
 		expect(r.exitCode).toBe(129);
 	});
@@ -144,6 +169,7 @@ describe("other leading options", () => {
 		for (const opt of ["--no-pager", "-P", "--paginate", "-p"]) {
 			const r = await bash.exec(`git ${opt} status --short`, { cwd: "/r" });
 			expect(r.stdout).toBe("A  f\n");
+			expect(r.stderr).toBe("");
 			expect(r.exitCode).toBe(0);
 		}
 	});
@@ -163,6 +189,7 @@ describe("dispatch sees the real command", () => {
 	test("a blocked command stays blocked behind -c", async () => {
 		const git = createGit({ disabled: ["push"] });
 		const r = await git.exec("-c user.name=x push", { fs: new InMemoryFs(), cwd: "/" });
+		expect(r.stdout).toBe("");
 		expect(r.stderr).toBe("git: 'push' is not available in this environment\n");
 		expect(r.exitCode).toBe(1);
 	});

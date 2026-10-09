@@ -18,6 +18,11 @@ export function isExecutableMode(mode: number | string): boolean {
 	return mode === 0o100755;
 }
 
+export function isRegularFileMode(mode: number | string): boolean {
+	if (typeof mode === "string") return mode === "100644" || mode === "100755";
+	return mode === 0o100644 || mode === 0o100755;
+}
+
 /** Check whether a git mode (numeric or string) represents a submodule (gitlink). */
 export function isSubmoduleMode(mode: number | string): boolean {
 	if (typeof mode === "string") return mode === "160000";

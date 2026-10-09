@@ -5,16 +5,15 @@ import {
 	addEntry,
 	findEntry,
 	getIndexTimestamp,
-	gitModeFromFileStat,
 	indexStatFromFileStat,
 	indexStatMatchesFile,
+	worktreeMode,
 } from "./index.ts";
 import { readObject, writeObject } from "./object-db.ts";
 import { isInsideWorkTree, verifyPath, verifySymlinkTarget } from "./path-safety.ts";
 import { dirname, join } from "./path.ts";
 import { isExecutableMode, isSubmoduleMode, isSymlinkMode, lstatSafe } from "./symlink.ts";
 import { flattenTree } from "./tree-ops.ts";
-import type { FileStat } from "../fs.ts";
 import type { GitContext, Index, IndexEntry, ObjectId, WorkTreeDiff } from "./types.ts";
 
 const encoder = new TextEncoder();
@@ -87,9 +86,9 @@ export async function diffIndexToWorkTree(
 			continue;
 		}
 
-		if (indexStatMatchesFile(entry, st, indexTimestamp)) continue;
+		if (indexStatMatchesFile(ctx.fs, entry, st, indexTimestamp)) continue;
 
-		const workTreeMode = worktreeMode(ctx, entry, st);
+		const workTreeMode = worktreeMode(ctx.fs, entry, st);
 		const workTreeHash = await hashCleanedWorktreeEntry(ctx, fullPath, entry.hash, st);
 
 		if (workTreeHash !== entry.hash || workTreeMode !== entry.mode) {
@@ -121,11 +120,6 @@ export async function diffIndexToWorkTree(
 
 	if (stopAfterFirst) return results;
 	return results.sort((a, b) => comparePaths(a.path, b.path));
-}
-
-function worktreeMode(ctx: GitContext, entry: IndexEntry, st: FileStat): number {
-	if (st.isFile && isSymlinkMode(entry.mode) && !ctx.fs.symlink) return entry.mode;
-	return gitModeFromFileStat(st);
 }
 
 // ── Checkout ────────────────────────────────────────────────────────
@@ -269,14 +263,14 @@ export async function stageFile(
 		return { index: addEntry(index, entry), hash };
 	}
 
+	const existing = findEntry(index, path);
 	const content = await ctx.fs.readFileBuffer(fullPath);
-	const blobContent = await cleanForCheckin(ctx, content, findEntry(index, path)?.hash);
+	const blobContent = await cleanForCheckin(ctx, content, existing?.hash);
 	const hash = await writeObject(ctx, "blob", blobContent);
 
-	const mode = gitModeFromFileStat(st);
 	const entry: IndexEntry = {
 		path,
-		mode,
+		mode: worktreeMode(ctx.fs, existing, st),
 		hash,
 		stage: 0,
 		// Index stat data describes the worktree file, not the cleaned blob.

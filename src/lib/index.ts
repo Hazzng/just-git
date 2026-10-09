@@ -240,19 +240,17 @@ function fileStandsInForSymlink(
 	return stat.isFile && isSymlinkMode(entry.mode) && !fs.symlink;
 }
 
-/**
- * Git's `ce_mode_from_stat`: the mode a worktree path gets, given the index
- * entry at that path. A filesystem without `chmod` cannot hold the exec bit,
- * so it is treated as `core.fileMode=false`: a tracked regular file keeps its
- * index mode and a new one is 100644, whatever `stat` reports.
- */
+function fsTracksExecutableBit(fs: FileSystem): boolean {
+	return fs.chmod !== undefined;
+}
+
 export function worktreeMode(
 	fs: FileSystem,
 	entry: Pick<IndexEntry, "mode"> | undefined,
 	stat: FileStat,
 ): number {
 	if (entry && fileStandsInForSymlink(fs, entry, stat)) return entry.mode;
-	if (stat.isFile && !fs.chmod) {
+	if (stat.isFile && !fsTracksExecutableBit(fs)) {
 		return entry && isRegularFileMode(entry.mode) ? entry.mode : 0o100644;
 	}
 	return gitModeFromFileStat(stat);

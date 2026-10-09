@@ -103,7 +103,6 @@ interface PathState {
 	 */
 	getWorktreeHash: () => Promise<ObjectId | null>;
 
-	/** Lazy worktree mode, null when the path is not on disk. */
 	getWorktreeMode: () => Promise<number | null>;
 
 	/** Mode from the head tree (for entry creation). */

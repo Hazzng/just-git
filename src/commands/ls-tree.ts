@@ -20,12 +20,12 @@ interface WalkOptions {
 	recursive: boolean;
 	showTrees: boolean;
 	treesOnly: boolean;
-	/**
-	 * Literal repo-relative paths, never globs. A trailing `/` selects a
-	 * directory's contents rather than the directory entry itself, and `""`
-	 * selects everything.
-	 */
-	specs: string[];
+	filters: PathFilter[];
+}
+
+interface PathFilter {
+	path: string;
+	listContents: boolean;
 }
 
 interface ListedEntry extends TreeEntry {
@@ -64,24 +64,24 @@ export function registerLsTreeCommand(parent: Command, ext?: GitExtensions): voi
 
 			const prefix = args.fullTree ? "" : getCwdPrefix(gitCtx, ctx.cwd);
 			const rawPaths = [...(args.path ?? []), ...meta.passthrough];
-			const specs: string[] = [];
+			const filters: PathFilter[] = [];
 			for (const raw of rawPaths) {
-				const spec = resolveSpec(raw, prefix, gitCtx.workTree);
-				if (spec === null) {
+				const filter = resolvePathFilter(raw, prefix, gitCtx.workTree);
+				if (filter === null) {
 					return fatal(
 						`${raw}: '${raw}' is outside repository at '${gitCtx.workTree ?? gitCtx.gitDir}'`,
 					);
 				}
-				specs.push(spec);
+				filters.push(filter);
 			}
-			if (specs.length === 0 && prefix !== "") specs.push(`${prefix}/`);
+			if (filters.length === 0 && prefix !== "") filters.push({ path: prefix, listContents: true });
 
 			const entries: ListedEntry[] = [];
 			await collect(gitCtx, treeHash, "", entries, {
 				recursive: args.recursive,
 				showTrees: args.showTrees || (args.recursive && args.treesOnly),
 				treesOnly: args.treesOnly,
-				specs,
+				filters,
 			});
 
 			const nameOnly = args.nameOnly || args.nameStatus;
@@ -113,9 +113,12 @@ async function peelToTree(ctx: GitRepo, hash: ObjectId): Promise<ObjectId | null
 	}
 }
 
-/** Resolve a cwd-relative path argument to a spec, or null when it leaves the repository. */
-function resolveSpec(raw: string, prefix: string, workTree: string | null): string | null {
-	const selectsContents = raw.endsWith("/") || /(^|\/)\.\.?$/.test(raw);
+function resolvePathFilter(
+	raw: string,
+	prefix: string,
+	workTree: string | null,
+): PathFilter | null {
+	const listContents = raw.endsWith("/") || /(^|\/)\.\.?$/.test(raw);
 	let path: string;
 	if (raw.startsWith("/")) {
 		if (!workTree) return null;
@@ -126,7 +129,7 @@ function resolveSpec(raw: string, prefix: string, workTree: string | null): stri
 	path = path.replace(/\/$/, "");
 	if (path === ".") path = "";
 	if (path === ".." || path.startsWith("../")) return null;
-	return selectsContents && path !== "" ? `${path}/` : path;
+	return { path, listContents: listContents || path === "" };
 }
 
 async function collect(
@@ -139,11 +142,15 @@ async function collect(
 	const raw = await readObject(ctx, treeHash);
 	for (const entry of parseTree(raw.content).entries) {
 		const path = base ? `${base}/${entry.name}` : entry.name;
-		if (opts.specs.length > 0 && !opts.specs.some((spec) => specMatches(spec, path, entry.mode))) {
+		if (opts.filters.length > 0 && !opts.filters.some((f) => filterMatches(f, path, entry.mode))) {
 			continue;
 		}
 		if (entry.mode === FileMode.DIRECTORY) {
-			const descend = opts.recursive || opts.specs.some((spec) => spec.startsWith(`${path}/`));
+			const descend =
+				opts.recursive ||
+				opts.filters.some(
+					(f) => f.path.startsWith(`${path}/`) || (f.listContents && f.path === path),
+				);
 			if (!descend || opts.showTrees) out.push({ ...entry, path });
 			if (descend) await collect(ctx, entry.hash, path, out, opts);
 			continue;
@@ -153,15 +160,12 @@ async function collect(
 	}
 }
 
-function specMatches(spec: string, path: string, mode: string): boolean {
-	if (spec === "") return true;
-	const selectsContents = spec.endsWith("/");
-	const specPath = selectsContents ? spec.slice(0, -1) : spec;
-	if (path === specPath) {
-		return !selectsContents || mode === FileMode.DIRECTORY || mode === FileMode.SUBMODULE;
+function filterMatches(filter: PathFilter, path: string, mode: string): boolean {
+	if (filter.path === "" || path.startsWith(`${filter.path}/`)) return true;
+	if (path === filter.path) {
+		return !filter.listContents || mode === FileMode.DIRECTORY || mode === FileMode.SUBMODULE;
 	}
-	if (path.startsWith(`${specPath}/`)) return true;
-	return mode === FileMode.DIRECTORY && specPath.startsWith(`${path}/`);
+	return mode === FileMode.DIRECTORY && filter.path.startsWith(`${path}/`);
 }
 
 function objectType(mode: string): "tree" | "commit" | "blob" {
@@ -182,7 +186,6 @@ const C_ESCAPES: Record<number, string> = {
 	0x5c: "\\\\",
 };
 
-/** Quote a path like git's `quote_c_style` with `core.quotePath` enabled. */
 function quotePath(path: string): string {
 	const bytes = new TextEncoder().encode(path);
 	let out = "";

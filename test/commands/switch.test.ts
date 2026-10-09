@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { BASIC_REPO, EMPTY_REPO, TEST_ENV_NAMED as TEST_ENV } from "../fixtures";
-import { createTestBash, quickExec, readFile, runScenario, setupClonePair } from "../util";
+import {
+	createTestBash,
+	permissionBits,
+	quickExec,
+	readFile,
+	runScenario,
+	setupClonePair,
+	setupExecBitRepo,
+} from "../util";
 
 describe("git switch", () => {
 	describe("errors", () => {
@@ -476,5 +484,17 @@ describe("git switch", () => {
 			expect(exists.exitCode).toBe(128);
 			expect(exists.stderr).toBe("fatal: a branch named 'main' already exists\n");
 		});
+	});
+});
+
+describe("git switch: executable bit", () => {
+	test("switch flips the bit to match the branch", async () => {
+		const bash = await setupExecBitRepo();
+		expect((await bash.exec("git switch plain")).exitCode).toBe(0);
+		expect(await permissionBits(bash.fs, "/repo/run.sh")).toBe(0o644);
+		expect((await bash.exec("git status --short")).stdout).toBe("");
+		expect((await bash.exec("git switch main")).exitCode).toBe(0);
+		expect(await permissionBits(bash.fs, "/repo/run.sh")).toBe(0o755);
+		expect((await bash.exec("git status --short")).stdout).toBe("");
 	});
 });

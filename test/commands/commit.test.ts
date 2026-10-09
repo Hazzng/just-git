@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BASIC_REPO, EMPTY_REPO, TEST_ENV_NAMED as TEST_ENV } from "../fixtures";
-import { createTestBash, quickExec, readFile, runScenario } from "../util";
+import { createTestBash, quickExec, readFile, runScenario, setupExecBitRepo } from "../util";
 
 describe("git commit", () => {
 	describe("outside a git repo", () => {
@@ -832,5 +832,15 @@ describe("git commit", () => {
 				"error: Committing is not possible because you have unmerged files.",
 			);
 		});
+	});
+});
+
+describe("git commit: executable bit", () => {
+	test("commit after checkout records no mode change", async () => {
+		const bash = await setupExecBitRepo();
+		await bash.exec("rm run.sh && git checkout -- run.sh && git add -A");
+		const result = await bash.exec("git commit -m noop");
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toBe("On branch main\nnothing to commit, working tree clean\n");
 	});
 });

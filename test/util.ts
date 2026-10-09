@@ -104,3 +104,25 @@ export async function isFile(fs: IFileSystem, path: string): Promise<boolean> {
 	const stat = await fs.stat(path);
 	return stat.isFile;
 }
+
+/**
+ * Repo at /repo with an executable `run.sh` committed on `main`, plus a
+ * `plain` branch where the same content is committed as 100644. Ends on `main`.
+ */
+export async function setupExecBitRepo(): Promise<Bash> {
+	const bash = createTestBash({
+		files: { "/repo/run.sh": "#!/bin/sh\necho hi\n" },
+		env: TEST_ENV,
+	});
+	await bash.exec("git init && chmod 755 run.sh && git add run.sh && git commit -m exec");
+	await bash.exec(
+		"git switch -c plain && chmod 644 run.sh && git add run.sh && git commit -m plain",
+	);
+	await bash.exec("git switch main");
+	return bash;
+}
+
+/** Permission bits of a path in the virtual filesystem (e.g. `0o755`). */
+export async function permissionBits(fs: IFileSystem, path: string): Promise<number> {
+	return (await fs.stat(path)).mode & 0o777;
+}
